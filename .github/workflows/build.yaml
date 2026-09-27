@@ -1,0 +1,157 @@
+name: Build ASD
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Pin .NET 8
+      shell: pwsh
+      run: |-
+        Set-Content -Path 'global.json' -Value '{"sdk":{"version":"8.0.400","rollForward":"latestFeature"}}'
+        dotnet --version
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Restore
+      run: dotnet restore ASD.sln
+
+    - name: Build with MSBuild
+      id: build
+      shell: pwsh
+      run: |-
+        msbuild ASD.csproj /p:Configuration=Release /p:Platform=x64 /v:detailed 2>&1 | Tee-Object -FilePath build-log.txt
+        Write-Host "BUILD EXIT CODE: $LASTEXITCODE"
+      continue-on-error: true
+
+    - name: Extract errors
+      if: steps.build.outcome == 'failure'
+      shell: pwsh
+      run: |-
+        Write-Host '=== ERRORS ==='
+        Select-String -Path build-log.txt -Pattern 'error ' | Select-Object -First 50 | ForEach-Object { Write-Host $_.Line }
+
+    - name: Publish self-contained single-file
+      id: publish
+      if: steps.build.outcome == 'success'
+      shell: pwsh
+      run: |-
+        dotnet publish ASD.csproj -c Release -r win-x64 `
+          --self-contained true `
+          -p:PublishSingleFile=true `
+          -p:IncludeNativeLibrariesForSelfExtract=true `
+          -p:EnableCompressionInSingleFile=true `
+          -p:IncludeAllContentForSelfExtract=true `
+          -p:PublishTrimmed=false `
+          -p:EnableMsixTooling=true `
+          -p:WindowsPackageType=None `
+          -p:WindowsAppSDKSelfContained=true 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\publish-log.txt"
+        $code = $LASTEXITCODE
+        Write-Host "PUBLISH EXIT CODE: $code"
+        if ($code -eq 0) {
+          echo "publish_ok=true" >> $env:GITHUB_OUTPUT
+        } else {
+          echo "publish_ok=false" >> $env:GITHUB_OUTPUT
+        }
+      continue-on-error: true
+
+    - name: Show publish errors
+      if: steps.publish.outputs.publish_ok != 'true'
+      shell: pwsh
+      run: |-
+        Write-Host "=== PUBLISH ERRORS ==="
+        if (Test-Path "$env:RUNNER_TEMP\publish-log.txt") {
+          Select-String -Path "$env:RUNNER_TEMP\publish-log.txt" -Pattern 'error ' | Select-Object -First 20 | ForEach-Object { Write-Host $_.Line }
+        }
+
+    - name: Find published EXE
+      id: findexe
+      if: steps.publish.outputs.publish_ok == 'true'
+      shell: pwsh
+      run: |-
+        $exe = Get-ChildItem -Path '.' -Recurse -Filter 'ASD.exe' -ErrorAction SilentlyContinue |
+          Where-Object { $_.FullName -like '*bin*Release*publish*' } |
+          Select-Object -First 1
+        if ($exe) {
+          echo "exe_found=true" >> $env:GITHUB_OUTPUT
+          echo "exe_dir=$($exe.DirectoryName)" >> $env:GITHUB_OUTPUT
+          echo "exe_path=$($exe.FullName)" >> $env:GITHUB_OUTPUT
+          $size = [math]::Round(($exe.Length / 1MB), 2)
+          Write-Host "PUBLISHED EXE: $($exe.FullName) ($size MB)"
+        } else {
+          echo "exe_found=false" >> $env:GITHUB_OUTPUT
+          Write-Host "Published EXE not found"
+        }
+
+    - name: Find fallback EXE (non-publish build)
+      id: findexe2
+      if: steps.findexe.outputs.exe_found != 'true' && steps.build.outcome == 'success'
+      shell: pwsh
+      run: |-
+        $exe = Get-ChildItem -Path '.' -Recurse -Filter 'ASD.exe' -ErrorAction SilentlyContinue |
+          Where-Object { $_.FullName -like '*bin*Release*' } |
+          Select-Object -First 1
+        if ($exe) {
+          echo "exe_found=true" >> $env:GITHUB_OUTPUT
+          echo "exe_dir=$($exe.DirectoryName)" >> $env:GITHUB_OUTPUT
+          echo "exe_path=$($exe.FullName)" >> $env:GITHUB_OUTPUT
+          Write-Host "FALLBACK EXE: $($exe.FullName)"
+        } else {
+          echo "exe_found=false" >> $env:GITHUB_OUTPUT
+        }
+
+    - name: Create Release (single EXE, no zip)
+      if: steps.findexe.outputs.exe_found == 'true'
+      shell: pwsh
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |-
+        $tag = "v1.0.0-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+        $exePath = "${{ steps.findexe.outputs.exe_path }}"
+        $exeName = "ASD.exe"
+        $size = [math]::Round(((Get-Item $exePath).Length / 1MB), 2)
+        Write-Host "UPLOAD: $exeName ($size MB)"
+        $body = @{ tag_name=$tag; target_commitish=$env:GITHUB_SHA; name="Release $tag"; body="ASD $tag - Self-contained single EXE ($size MB)`n`nDownload ASD.exe and run it directly. No installation needed."; draft=$false; prerelease=$false } | ConvertTo-Json -Compress
+        $h = @{ "Authorization"="token $env:GITHUB_TOKEN"; "Accept"="application/vnd.github+json" }
+        $r = Invoke-RestMethod -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/releases" -Method Post -Headers $h -Body $body -ContentType 'application/json'
+        $url = $r.upload_url -replace '\{\?name,label\}', ''
+        Invoke-RestMethod -Uri "${url}?name=$exeName" -Method Post -Headers $h -Body ([IO.File]::ReadAllBytes($exePath)) -ContentType 'application/octet-stream' | Out-Null
+        Write-Host "RELEASE: $($r.html_url)"
+
+    - name: Create Release (fallback folder zip)
+      if: steps.findexe.outputs.exe_found != 'true' && steps.findexe2.outputs.exe_found == 'true'
+      shell: pwsh
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |-
+        $tag = "v1.0.0-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+        $exePath = "${{ steps.findexe2.outputs.exe_path }}"
+        $exeName = "ASD.exe"
+        $size = [math]::Round(((Get-Item $exePath).Length / 1MB), 2)
+        Write-Host "UPLOAD (fallback): $exeName ($size MB)"
+        $body = @{ tag_name=$tag; target_commitish=$env:GITHUB_SHA; name="Release $tag"; body="ASD $tag - Single EXE ($size MB)"; draft=$false; prerelease=$false } | ConvertTo-Json -Compress
+        $h = @{ "Authorization"="token $env:GITHUB_TOKEN"; "Accept"="application/vnd.github+json" }
+        $r = Invoke-RestMethod -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/releases" -Method Post -Headers $h -Body $body -ContentType 'application/json'
+        $url = $r.upload_url -replace '\{\?name,label\}', ''
+        Invoke-RestMethod -Uri "${url}?name=$exeName" -Method Post -Headers $h -Body ([IO.File]::ReadAllBytes($exePath)) -ContentType 'application/octet-stream' | Out-Null
+        Write-Host "RELEASE: $($r.html_url)"
+
+    - name: Upload logs on failure
+      if: steps.build.outcome == 'failure' || steps.publish.outputs.publish_ok != 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-log
+        path: |
+          build-log.txt
+          ${{ runner.temp }}/publish-log.txt
