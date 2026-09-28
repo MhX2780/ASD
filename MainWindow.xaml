@@ -1,0 +1,64 @@
+<Window
+    x:Class="ASD.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:ASD"
+    Title="ASD">
+
+    <NavigationView
+        x:Name="RootNav"
+        IsBackButtonVisible="Collapsed"
+        IsSettingsVisible="False"
+        IsPaneOpen="False"
+        PaneDisplayMode="Left"
+        SelectionChanged="RootNav_SelectionChanged"
+        Loaded="RootNav_Loaded"
+        OpenPaneLength="260"
+        CompactPaneLength="48"
+        Background="{ThemeResource ApplicationPageBackgroundThemeBrush}"
+        IsPaneToggleButtonVisible="True"
+        IsTitleBarAutoPaddingEnabled="False"
+        AlwaysShowHeader="False"
+        CompactModeThresholdWidth="0"
+        ExpandedModeThresholdWidth="10000">
+
+        <NavigationView.MenuItems>
+            <NavigationViewItem Content="Encode / Decode" Tag="encode" ToolTipService.ToolTip="Base64, URL, Hex, ROT13">
+                <NavigationViewItem.Icon>
+                    <FontIcon Glyph="&#xE8C8;" FontSize="16" />
+                </NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Encrypt / Decrypt" Tag="crypto" ToolTipService.ToolTip="AES Encryption">
+                <NavigationViewItem.Icon>
+                    <SymbolIcon Symbol="Permissions" />
+                </NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Hash" Tag="hash" ToolTipService.ToolTip="MD5, SHA-1, SHA-256, SHA-512">
+                <NavigationViewItem.Icon>
+                    <FontIcon Glyph="&#xE73E;" FontSize="16" />
+                </NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Text Tools" Tag="text" ToolTipService.ToolTip="Case, counters, JSON formatter">
+                <NavigationViewItem.Icon>
+                    <FontIcon Glyph="&#xE8FD;" FontSize="16" />
+                </NavigationViewItem.Icon>
+            </NavigationViewItem>
+        </NavigationView.MenuItems>
+
+        <NavigationView.FooterMenuItems>
+            <NavigationViewItem Content="Settings" Tag="settings" ToolTipService.ToolTip="Settings">
+                <NavigationViewItem.Icon>
+                    <SymbolIcon Symbol="Setting" />
+                </NavigationViewItem.Icon>
+            </NavigationViewItem>
+        </NavigationView.FooterMenuItems>
+
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <Frame x:Name="ContentFrame" Grid.Row="0" CacheSize="3"
+                   VerticalAlignment="Stretch" HorizontalAlignment="Stretch"/>
+        </Grid>
+    </NavigationView>
+</Window>

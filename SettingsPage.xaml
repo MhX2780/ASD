@@ -1,0 +1,39 @@
+<Page
+    x:Class="ASD.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Loaded="Page_Loaded">
+
+    <Grid Padding="32" RowSpacing="20" VerticalAlignment="Top">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Settings" FontSize="26" FontWeight="Bold"/>
+
+        <StackPanel Grid.Row="1" Spacing="8">
+            <TextBlock Text="Theme" FontSize="16" FontWeight="SemiBold"/>
+            <RadioButtons x:Name="ThemeRadioButtons" SelectionChanged="OnThemeChanged">
+                <RadioButton x:Name="AutoThemeOption" Content="Follow Windows"/>
+                <RadioButton x:Name="LightThemeOption" Content="Light"/>
+                <RadioButton x:Name="DarkThemeOption" Content="Dark"/>
+            </RadioButtons>
+        </StackPanel>
+
+        <StackPanel Grid.Row="2" Spacing="8">
+            <TextBlock Text="Data" FontSize="16" FontWeight="SemiBold"/>
+            <TextBlock Opacity="0.7" TextWrapping="Wrap"
+                       Text="This app doesn't store or send any of the text, passwords, or files you process in the tools — everything happens locally in memory and is cleared when you close the app. Only your theme choice is saved."/>
+            <Button Content="Reset Settings to Default" Click="OnResetClick" HorizontalAlignment="Left"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="3" Spacing="4">
+            <TextBlock Text="About" FontSize="16" FontWeight="SemiBold"/>
+            <TextBlock Text="ASD — Dev Toolbox" Opacity="0.7"/>
+            <TextBlock Text="Version 1.0.0" Opacity="0.7"/>
+        </StackPanel>
+    </Grid>
+</Page>

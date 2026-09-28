@@ -1,0 +1,19 @@
+<Application
+    x:Class="ASD.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:ASD"
+    RequestedTheme="Dark">
+
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- Navigation: transparent backgrounds -->
+            <SolidColorBrush x:Key="NavigationViewContentGridBorderBrush" Color="Transparent"/>
+            <SolidColorBrush x:Key="NavigationViewDefaultPaneBackground" Color="Transparent"/>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>
