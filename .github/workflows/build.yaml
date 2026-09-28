@@ -111,40 +111,44 @@ jobs:
           echo "exe_found=false" >> $env:GITHUB_OUTPUT
         }
 
-    - name: Create Release (single EXE, no zip)
-      if: steps.findexe.outputs.exe_found == 'true'
+    - name: Create ZIP (ASD.zip)
+      id: zip
+      if: steps.findexe.outputs.exe_found == 'true' || steps.findexe2.outputs.exe_found == 'true'
       shell: pwsh
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |-
-        $tag = "v1.0.0-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-        $exePath = "${{ steps.findexe.outputs.exe_path }}"
-        $exeName = "ASD.exe"
-        $size = [math]::Round(((Get-Item $exePath).Length / 1MB), 2)
-        Write-Host "UPLOAD: $exeName ($size MB)"
-        $body = @{ tag_name=$tag; target_commitish=$env:GITHUB_SHA; name="Release $tag"; body="ASD $tag - Self-contained single EXE ($size MB)`n`nDownload ASD.exe and run it directly. No installation needed."; draft=$false; prerelease=$false } | ConvertTo-Json -Compress
-        $h = @{ "Authorization"="token $env:GITHUB_TOKEN"; "Accept"="application/vnd.github+json" }
-        $r = Invoke-RestMethod -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/releases" -Method Post -Headers $h -Body $body -ContentType 'application/json'
-        $url = $r.upload_url -replace '\{\?name,label\}', ''
-        Invoke-RestMethod -Uri "${url}?name=$exeName" -Method Post -Headers $h -Body ([IO.File]::ReadAllBytes($exePath)) -ContentType 'application/octet-stream' | Out-Null
-        Write-Host "RELEASE: $($r.html_url)"
+        $dir = "${{ steps.findexe.outputs.exe_dir }}"
+        if (-not $dir) { $dir = "${{ steps.findexe2.outputs.exe_dir }}" }
+        Write-Host "ZIP SOURCE: $dir"
+        $zip = Join-Path $env:RUNNER_TEMP 'ASD.zip'
+        if (Test-Path $zip) { Remove-Item $zip -Force }
+        Compress-Archive -Path (Join-Path $dir '*') -DestinationPath $zip -CompressionLevel Optimal
+        $size = [math]::Round(((Get-Item $zip).Length / 1MB), 2)
+        Write-Host "CREATED: ASD.zip ($size MB)"
+        echo "zip_path=$zip" >> $env:GITHUB_OUTPUT
+        echo "zip_size=$size" >> $env:GITHUB_OUTPUT
 
-    - name: Create Release (fallback folder zip)
-      if: steps.findexe.outputs.exe_found != 'true' && steps.findexe2.outputs.exe_found == 'true'
+    - name: Upload ASD.zip as artifact
+      if: steps.zip.outcome == 'success'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ASD
+        path: ${{ steps.zip.outputs.zip_path }}
+
+    - name: Create Release and upload ASD.zip
+      if: steps.zip.outcome == 'success'
       shell: pwsh
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |-
         $tag = "v1.0.0-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-        $exePath = "${{ steps.findexe2.outputs.exe_path }}"
-        $exeName = "ASD.exe"
-        $size = [math]::Round(((Get-Item $exePath).Length / 1MB), 2)
-        Write-Host "UPLOAD (fallback): $exeName ($size MB)"
-        $body = @{ tag_name=$tag; target_commitish=$env:GITHUB_SHA; name="Release $tag"; body="ASD $tag - Single EXE ($size MB)"; draft=$false; prerelease=$false } | ConvertTo-Json -Compress
+        $zipPath = "${{ steps.zip.outputs.zip_path }}"
+        $size = "${{ steps.zip.outputs.zip_size }}"
+        Write-Host "UPLOAD: ASD.zip ($size MB)"
+        $body = @{ tag_name=$tag; target_commitish=$env:GITHUB_SHA; name="Release $tag"; body="ASD $tag ($size MB)`n`nDownload ASD.zip, extract it, and run ASD.exe. No installation needed."; draft=$false; prerelease=$false } | ConvertTo-Json -Compress
         $h = @{ "Authorization"="token $env:GITHUB_TOKEN"; "Accept"="application/vnd.github+json" }
         $r = Invoke-RestMethod -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/releases" -Method Post -Headers $h -Body $body -ContentType 'application/json'
         $url = $r.upload_url -replace '\{\?name,label\}', ''
-        Invoke-RestMethod -Uri "${url}?name=$exeName" -Method Post -Headers $h -Body ([IO.File]::ReadAllBytes($exePath)) -ContentType 'application/octet-stream' | Out-Null
+        Invoke-RestMethod -Uri "${url}?name=ASD.zip" -Method Post -Headers $h -Body ([IO.File]::ReadAllBytes($zipPath)) -ContentType 'application/zip' | Out-Null
         Write-Host "RELEASE: $($r.html_url)"
 
     - name: Upload logs on failure
