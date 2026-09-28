@@ -42,17 +42,14 @@ jobs:
         Write-Host '=== ERRORS ==='
         Select-String -Path build-log.txt -Pattern 'error ' | Select-Object -First 50 | ForEach-Object { Write-Host $_.Line }
 
-    - name: Publish self-contained single-file
+    - name: Publish self-contained (folder, not single-file)
       id: publish
       if: steps.build.outcome == 'success'
       shell: pwsh
       run: |-
         dotnet publish ASD.csproj -c Release -r win-x64 `
           --self-contained true `
-          -p:PublishSingleFile=true `
-          -p:IncludeNativeLibrariesForSelfExtract=true `
-          -p:EnableCompressionInSingleFile=true `
-          -p:IncludeAllContentForSelfExtract=true `
+          -p:PublishSingleFile=false `
           -p:PublishTrimmed=false `
           -p:EnableMsixTooling=true `
           -p:WindowsPackageType=None `
@@ -144,7 +141,7 @@ jobs:
         $zipPath = "${{ steps.zip.outputs.zip_path }}"
         $size = "${{ steps.zip.outputs.zip_size }}"
         Write-Host "UPLOAD: ASD.zip ($size MB)"
-        $body = @{ tag_name=$tag; target_commitish=$env:GITHUB_SHA; name="Release $tag"; body="ASD $tag ($size MB)`n`nDownload ASD.zip, extract it, and run ASD.exe. No installation needed."; draft=$false; prerelease=$false } | ConvertTo-Json -Compress
+        $body = @{ tag_name=$tag; target_commitish=$env:GITHUB_SHA; name="Release $tag"; body="ASD $tag ($size MB)`n`nDownload ASD.zip, extract the whole folder, and run ASD.exe. No installation needed."; draft=$false; prerelease=$false } | ConvertTo-Json -Compress
         $h = @{ "Authorization"="token $env:GITHUB_TOKEN"; "Accept"="application/vnd.github+json" }
         $r = Invoke-RestMethod -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/releases" -Method Post -Headers $h -Body $body -ContentType 'application/json'
         $url = $r.upload_url -replace '\{\?name,label\}', ''
