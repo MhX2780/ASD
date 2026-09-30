@@ -19,67 +19,93 @@ namespace ASD;
 /// </summary>
 public static class CursorHelper
 {
-    private static InputCursor? _handCursor;
-    private static string _cursorsFolder = string.Empty;
+    // Cursor files in Assets/Cursors:
+    //   Li_pointer.cur / Li_hand.cur  = LIGHT (white) cursors  → used on dark backgrounds
+    //   Dr_pointer.cur / Dr_hand.cur  = DARK  (black) cursors  → used on light backgrounds
+    private static InputCursor? _ptrLight, _ptrDark, _handLight, _handDark;
+    private static InputCursor _ptr = InputSystemCursor.Create(InputSystemCursorShape.Arrow);
+    private static InputCursor _hand = InputSystemCursor.Create(InputSystemCursorShape.Hand);
+    private static bool _dark;
+
+    private static WeakReference<UIElement>? _root;
+    private static readonly List<WeakReference<UIElement>> _handTargets = new();
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<UIElement, object> _seen = new();
 
     /// <summary>
-    /// Loads both cursors once at startup:
-    ///   - Assets/Cursors/pointer.cur → the app's default cursor (applied to <paramref name="rootElement"/>).
-    ///   - Assets/Cursors/hand.cur    → used for Buttons/Nav items instead of the system hand shape.
-    /// Either file can be missing — pointer falls back to the system arrow, hand falls back
-    /// to the built-in system "Hand" shape. Call this once, from MainWindow's constructor,
-    /// before ApplyHandCursorToButtons/ApplyHandCursorToNavItems are used anywhere.
+    /// Loads the four cursors once at startup (any file may be missing: it falls back to the
+    /// other colour, then to the system arrow / hand). Call once from MainWindow's constructor.
     /// </summary>
     public static void Initialize(UIElement rootElement, string cursorsFolder)
     {
-        _cursorsFolder = cursorsFolder;
-        SetCustomPointer(rootElement, Path.Combine(cursorsFolder, "pointer.cur"));
-        _handCursor = TryLoadCustomHand(cursorsFolder) ?? InputSystemCursor.Create(InputSystemCursorShape.Hand);
-    }
+        _root = new WeakReference<UIElement>(rootElement);
 
-    private static InputCursor? TryLoadCustomHand(string cursorsFolder)
-    {
-        try
-        {
-            var path = Path.Combine(cursorsFolder, "hand.cur");
-            if (!File.Exists(path)) return null;
-            return LoadCursorFromFile(path);
-        }
-        catch
-        {
-            return null; // fall back to the system hand shape
-        }
-    }
+        _ptrLight = TryLoad(cursorsFolder, "Li_pointer.cur", "Li_poitner.cur", "pointer.cur");
+        _ptrDark  = TryLoad(cursorsFolder, "Dr_pointer.cur", "Dr_poitner.cur", "pointer.cur");
+        _handLight = TryLoad(cursorsFolder, "Li_hand.cur", "hand.cur");
+        _handDark  = TryLoad(cursorsFolder, "Dr_hand.cur", "hand.cur");
 
-    private static InputCursor HandCursor => _handCursor ??= InputSystemCursor.Create(InputSystemCursorShape.Hand);
+        Apply();
+    }
 
     /// <summary>
-    /// Sets the app's default ("normal") cursor from a .cur/.ani file. If the file is
-    /// missing or invalid, this does nothing and the system arrow keeps being used.
+    /// Switches between the white cursors (dark theme) and the black cursors (light theme)
+    /// and updates every element that already has a cursor.
     /// </summary>
-    private static void SetCustomPointer(UIElement rootElement, string curFilePath)
+    public static void SetDarkTheme(bool dark)
     {
-        try
+        _dark = dark;
+        Apply();
+    }
+
+    private static void Apply()
+    {
+        _ptr = (_dark ? _ptrLight ?? _ptrDark : _ptrDark ?? _ptrLight)
+               ?? InputSystemCursor.Create(InputSystemCursorShape.Arrow);
+        _hand = (_dark ? _handLight ?? _handDark : _handDark ?? _handLight)
+                ?? InputSystemCursor.Create(InputSystemCursorShape.Hand);
+
+        if (_root != null && _root.TryGetTarget(out var root)) ChangeCursor(root, _ptr);
+
+        _handTargets.RemoveAll(w => !w.TryGetTarget(out _));
+        foreach (var w in _handTargets.ToList())
+            if (w.TryGetTarget(out var el)) ChangeCursor(el, _hand);
+    }
+
+    private static InputCursor? TryLoad(string folder, params string[] names)
+    {
+        foreach (var name in names)
         {
-            if (!File.Exists(curFilePath)) return;
-            var cursor = LoadCursorFromFile(curFilePath);
-            if (cursor != null)
-                ChangeCursor(rootElement, cursor);
+            try
+            {
+                var path = Path.Combine(folder, name);
+                if (!File.Exists(path)) continue;
+                var c = LoadCursorFromFile(path);
+                if (c != null) return c;
+            }
+            catch { /* try the next name */ }
         }
-        catch
+        return null;
+    }
+
+    private static void ApplyHand(UIElement element)
+    {
+        if (!_seen.TryGetValue(element, out _))
         {
-            // Missing/invalid cursor file — fall back to the default arrow rather than crash.
+            _seen.Add(element, new object());
+            _handTargets.Add(new WeakReference<UIElement>(element));
         }
+        ChangeCursor(element, _hand);
     }
 
     /// <summary>
-    /// Applies the hand cursor to every Button found in the visual tree under <paramref name="root"/>.
-    /// Call this from a Page's Loaded event (the visual tree must already be built).
+    /// Applies the hand cursor to every Button, CheckBox and ToggleSwitch found in the visual
+    /// tree under <paramref name="root"/>. Call this when the visual tree is built (Loaded).
     /// </summary>
     public static void ApplyHandCursorToButtons(DependencyObject root)
     {
-        foreach (var button in FindDescendants<Button>(root))
-            ChangeCursor(button, HandCursor);
+        foreach (var button in FindDescendants<Button>(root)) ApplyHand(button);
+        foreach (var box in FindDescendants<CheckBox>(root)) ApplyHand(box);
+        foreach (var sw in FindDescendants<ToggleSwitch>(root)) ApplyHand(sw);
     }
 
     /// <summary>
@@ -87,10 +113,8 @@ public static class CursorHelper
     /// </summary>
     public static void ApplyHandCursorToNavItems(NavigationView navView)
     {
-        foreach (var item in navView.MenuItems.OfType<UIElement>())
-            ChangeCursor(item, HandCursor);
-        foreach (var item in navView.FooterMenuItems.OfType<UIElement>())
-            ChangeCursor(item, HandCursor);
+        foreach (var item in navView.MenuItems.OfType<UIElement>()) ApplyHand(item);
+        foreach (var item in navView.FooterMenuItems.OfType<UIElement>()) ApplyHand(item);
     }
 
     private static IEnumerable<T> FindDescendants<T>(DependencyObject root) where T : DependencyObject

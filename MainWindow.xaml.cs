@@ -62,6 +62,7 @@ public sealed partial class MainWindow : Window
     /// <summary>Makes the minimize / maximize / close buttons match the light or dark theme.</summary>
     private void UpdateCaptionColors()
     {
+        CursorHelper.SetDarkTheme(RootGrid.ActualTheme == ElementTheme.Dark);
         try
         {
             if (!AppWindowTitleBar.IsCustomizationSupported()) return;

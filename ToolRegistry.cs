@@ -52,6 +52,10 @@ public static class ToolRegistry
             "xml html sql format beautify minify pretty", () => new FormatPage()),
         new("curl", "cURL → Code", "Convert cURL to C#, JS, Python, PowerShell", "\uE756", "more",
             "curl http request fetch httpclient requests convert", () => new CurlPage()),
+        new("httptrack", "HTTP Track", "Follow a request from send to reply: DNS, TCP, TLS, wire bytes, response, timing", "\uE895", "more",
+            "http track trace request response log dns tcp tls ssl redirect headers timing ttfb latency wire debug inspect api", () => new HttpTrackPage()),
+        new("httpdl", "HTTP Download", "Chunked parallel downloads with speed, size, ETA, pause and resume", "\uE896", "more",
+            "http download downloader chunk chunks parallel speed resume pause file size eta get wget sha256 idm", () => new HttpDownloadPage()),
         new("text", "Text Tools", "Case, counters, cleanup", "\uE8FD", "more",
             "text case upper lower count words lines trim", () => new TextToolsPage()),
 
