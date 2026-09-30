@@ -138,7 +138,7 @@ public abstract class ToolPage : Page
         return p;
     }
 
-    protected static Grid TwoCols(UIElement left, UIElement right)
+    protected static Grid TwoCols(FrameworkElement left, FrameworkElement right)
     {
         var g = new Grid { ColumnSpacing = 12 };
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
