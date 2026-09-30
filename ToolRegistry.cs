@@ -15,6 +15,8 @@ public static class ToolRegistry
     public static readonly IReadOnlyList<ToolInfo> All = new List<ToolInfo>
     {
         // ── Top navigation (7 tools + "More" = 8 items) ──
+        new("ico", "Image → ICO", "PNG, JPG, SVG … to a multi-size icon.ico", "\uE91B", "main",
+            "image icon ico png jpg jpeg svg bmp gif tiff webp convert favicon", () => new IcoPage()),
         new("encode", "Encode / Decode", "Base64, URL, Hex, ROT13", "\uE8C8", "main",
             "base64 url hex rot13 escape unescape", () => new EncodePage()),
         new("crypto", "Encrypt / Decrypt", "AES-256 with a password", "\uE72E", "main",
@@ -27,11 +29,15 @@ public static class ToolRegistry
             "jwt token bearer decode verify hs256 rs256 claims", () => new JwtPage()),
         new("regex", "Regex Tester", "Live matches, groups, replace, explain", "\uE721", "main",
             "regex regexp pattern match replace", () => new RegexPage()),
-        new("diff", "Diff Checker", "Compare two texts or JSON files", "\uE8AB", "main",
-            "diff compare difference text json", () => new DiffPage()),
         new("more", "More", "All other tools", "\uE712", "system", "", () => new MorePage()),
 
         // ── Listed on the "More" page ──
+        new("diff", "Diff Checker", "Compare two texts or JSON files", "\uE8AB", "more",
+            "diff compare difference text json", () => new DiffPage()),
+        new("track", "Process Tracker", "Follow an app from launch to exit: CPU, memory, children", "\uE9D9", "more",
+            "process track monitor watch cpu memory launch attach task exit child handles threads", () => new ProcessTrackerPage()),
+        new("imgconv", "Image Converter", "PNG ↔ JPG ↔ BMP ↔ GIF ↔ TIFF ↔ ICO ↔ SVG", "\uEB9F", "more",
+            "image convert png jpg bmp gif tiff ico svg format batch", () => new ImageConverterPage()),
         new("time", "Timestamp Converter", "Unix ↔ date, time zones, relative", "\uE121", "more",
             "timestamp unix epoch date time timezone iso", () => new TimestampPage()),
         new("gen", "Generators", "UUID v4/v7, ULID, passwords, tokens", "\uE8B7", "more",

@@ -24,6 +24,9 @@
 
         <!-- Top navigation: 7 tools + "More" = 8 items -->
         <NavigationView.MenuItems>
+            <NavigationViewItem Content="Image → ICO" Tag="ico" ToolTipService.ToolTip="Convert any image (even SVG) to icon.ico">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE91B;" FontSize="16" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
             <NavigationViewItem Content="Encode / Decode" Tag="encode" ToolTipService.ToolTip="Base64, URL, Hex, ROT13">
                 <NavigationViewItem.Icon><FontIcon Glyph="&#xE8C8;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
@@ -42,10 +45,7 @@
             <NavigationViewItem Content="Regex Tester" Tag="regex" ToolTipService.ToolTip="Live matches, groups, replace, explain">
                 <NavigationViewItem.Icon><FontIcon Glyph="&#xE721;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
-            <NavigationViewItem Content="Diff Checker" Tag="diff" ToolTipService.ToolTip="Compare two texts">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE8AB;" FontSize="16" /></NavigationViewItem.Icon>
-            </NavigationViewItem>
-            <NavigationViewItem Content="More" Tag="more" ToolTipService.ToolTip="Timestamp, generators, cron, converters, URL, formatters, cURL, text tools">
+            <NavigationViewItem Content="More" Tag="more" ToolTipService.ToolTip="Image converter, process tracker, diff, timestamp, generators, cron, converters, URL, formatters, cURL, text tools">
                 <NavigationViewItem.Icon><FontIcon Glyph="&#xE712;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
         </NavigationView.MenuItems>

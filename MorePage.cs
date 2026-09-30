@@ -35,11 +35,18 @@ public sealed class MorePage : ToolPage
     }
 
     private UIElement MakeGrid(List<ToolInfo> tools, HashSet<string> favs)
-    {
-        var grid = new VariableSizedWrapGrid { Orientation = Orientation.Horizontal, ItemWidth = 310, ItemHeight = 120 };
-        foreach (var t in tools) grid.Children.Add(Card(t, favs.Contains(t.Tag)));
-        return grid;
-    }
+        => new ItemsRepeater
+        {
+            ItemsSource = tools.Select(t => Card(t, favs.Contains(t.Tag))).ToList(),
+            Layout = new UniformGridLayout
+            {
+                MinItemWidth = 280,
+                MinItemHeight = 118,
+                MinRowSpacing = 6,
+                MinColumnSpacing = 6,
+                ItemsStretch = UniformGridLayoutItemsStretch.Fill,
+            },
+        };
 
     private UIElement Card(ToolInfo t, bool fav)
     {
@@ -79,7 +86,7 @@ public sealed class MorePage : ToolPage
         ToolTipService.SetToolTip(star, fav ? "Remove from favorites" : "Add to favorites");
         star.Click += (_, _) => { ToolRegistry.ToggleFavorite(t.Tag); Rebuild(); };
 
-        var g = new Grid();
+        var g = new Grid { Height = 118 };
         g.Children.Add(main);
         g.Children.Add(star);
         return g;

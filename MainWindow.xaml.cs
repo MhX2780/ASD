@@ -18,17 +18,10 @@ public sealed partial class MainWindow : Window
 
         this.AppWindow.Title = "ASD";
 
-        // Start maximized using DisplayArea
+        // Start maximized (respects DPI, taskbar and window borders)
         try
         {
-            var displayArea = Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(
-                AppWindow.Id, Microsoft.UI.Windowing.DisplayAreaFallback.Primary);
-            if (displayArea != null)
-            {
-                AppWindow.MoveAndResize(new Windows.Graphics.RectInt32(
-                    displayArea.WorkArea.X, displayArea.WorkArea.Y,
-                    displayArea.WorkArea.Width, displayArea.WorkArea.Height));
-            }
+            if (AppWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter presenter) presenter.Maximize();
         }
         catch { /* non-critical, window will show at default size */ }
 
@@ -81,7 +74,7 @@ public sealed partial class MainWindow : Window
     private void RootNav_Loaded(object sender, RoutedEventArgs e)
     {
         RootNav.IsPaneOpen = false;
-        OpenTool("encode");
+        OpenTool("ico");
         CursorHelper.ApplyHandCursorToNavItems(RootNav);
     }
 

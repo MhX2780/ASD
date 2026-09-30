@@ -40,7 +40,7 @@
         <StackPanel Grid.Row="4" Spacing="4">
             <TextBlock Text="About" FontSize="16" FontWeight="SemiBold"/>
             <TextBlock Text="ASD — Dev Toolbox" Opacity="0.7"/>
-            <TextBlock Text="Version 1.1.0  ·  Ctrl+K jumps to any tool" Opacity="0.7"/>
+            <TextBlock Text="Version 1.3.0  ·  Ctrl+K jumps to any tool" Opacity="0.7"/>
         </StackPanel>
     </Grid>
 </Page>
