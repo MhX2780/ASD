@@ -131,22 +131,36 @@ jobs:
         name: ASD
         path: ${{ steps.zip.outputs.zip_path }}
 
-    - name: Create Release and upload ASD.zip
+    - name: Update single release (tag "latest") with ASD.zip + update.txt
       if: steps.zip.outcome == 'success'
       shell: pwsh
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |-
-        $tag = "v1.0.0-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+        $tag = "latest"
         $zipPath = "${{ steps.zip.outputs.zip_path }}"
         $size = "${{ steps.zip.outputs.zip_size }}"
-        Write-Host "UPLOAD: ASD.zip ($size MB)"
-        $body = @{ tag_name=$tag; target_commitish=$env:GITHUB_SHA; name="Release $tag"; body="ASD $tag ($size MB)`n`nDownload ASD.zip, extract the whole folder, and run ASD.exe. No installation needed."; draft=$false; prerelease=$false } | ConvertTo-Json -Compress
-        $h = @{ "Authorization"="token $env:GITHUB_TOKEN"; "Accept"="application/vnd.github+json" }
-        $r = Invoke-RestMethod -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/releases" -Method Post -Headers $h -Body $body -ContentType 'application/json'
-        $url = $r.upload_url -replace '\{\?name,label\}', ''
-        Invoke-RestMethod -Uri "${url}?name=ASD.zip" -Method Post -Headers $h -Body ([IO.File]::ReadAllBytes($zipPath)) -ContentType 'application/zip' | Out-Null
-        Write-Host "RELEASE: $($r.html_url)"
+
+        # update.txt = commit name (message) + details
+        $subject = (git log -1 --pretty=%s).Trim()
+        $body    = (git log -1 --pretty=%b).Trim()
+        $sha     = (git rev-parse --short HEAD).Trim()
+        $date    = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'")
+        $lines = @("Commit: $subject")
+        if ($body) { $lines += ""; $lines += $body }
+        $lines += ""; $lines += "SHA: $sha"; $lines += "Date: $date"; $lines += "Size: $size MB"
+        $updatePath = Join-Path $env:RUNNER_TEMP 'update.txt'
+        Set-Content -Path $updatePath -Value $lines -Encoding utf8
+        Get-Content $updatePath
+
+        # Keep ONE release/tag: delete the old one, then recreate it
+        gh release delete $tag --cleanup-tag --yes 2>$null
+        $global:LASTEXITCODE = 0
+
+        gh release create $tag $zipPath $updatePath `
+          --target $env:GITHUB_SHA `
+          --title "ASD - $subject" `
+          --notes-file $updatePath
 
     - name: Upload logs on failure
       if: steps.build.outcome == 'failure' || steps.publish.outputs.publish_ok != 'true'
