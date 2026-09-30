@@ -112,10 +112,17 @@ public static class CursorHelper
     // samples for this exact gap in the WinAppSDK).
     private static void ChangeCursor(UIElement element, InputCursor? cursor)
     {
-        typeof(UIElement).InvokeMember(
-            "ProtectedCursor",
-            BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.SetProperty,
-            null, element, new object?[] { cursor });
+        try
+        {
+            typeof(UIElement).InvokeMember(
+                "ProtectedCursor",
+                BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.SetProperty,
+                null, element, new object?[] { cursor });
+        }
+        catch
+        {
+            // Cosmetic only: never let a cursor failure crash the app.
+        }
     }
 
     private static InputCursor? LoadCursorFromFile(string filePath)

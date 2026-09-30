@@ -18,7 +18,8 @@ public sealed partial class SettingsPage : Page
 
     private void LoadCurrentSelection()
     {
-        var mode = Windows.Storage.ApplicationData.Current.LocalSettings.Values["ThemeMode"] as string ?? "auto";
+        ClipToggle.IsOn = SettingsStore.Get("ClipboardDetect", "on") == "on";
+        var mode = SettingsStore.Get("ThemeMode", "auto");
         ThemeRadioButtons.SelectedItem = mode switch
         {
             "light" => LightThemeOption,
@@ -38,15 +39,23 @@ public sealed partial class SettingsPage : Page
             _ => "auto",
         };
 
-        Windows.Storage.ApplicationData.Current.LocalSettings.Values["ThemeMode"] = mode;
+        SettingsStore.Set("ThemeMode", mode);
         (App.MainWindow as MainWindow)?.ApplyTheme(mode);
+    }
+
+    private void OnClipToggled(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (_isLoading) return;
+        SettingsStore.Set("ClipboardDetect", ClipToggle.IsOn ? "on" : "off");
     }
 
     private void OnResetClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
-        Windows.Storage.ApplicationData.Current.LocalSettings.Values["ThemeMode"] = "auto";
+        SettingsStore.Set("ThemeMode", "auto");
         (App.MainWindow as MainWindow)?.ApplyTheme("auto");
+        SettingsStore.Set("ClipboardDetect", "on");
         _isLoading = true;
+        ClipToggle.IsOn = true;
         ThemeRadioButtons.SelectedItem = AutoThemeOption;
         _isLoading = false;
     }

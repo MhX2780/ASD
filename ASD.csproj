@@ -14,7 +14,7 @@
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <ApplicationTitle>ASD</ApplicationTitle>
-    <ApplicationDisplayVersion>1.0.0</ApplicationDisplayVersion>
+    <ApplicationDisplayVersion>1.1.0</ApplicationDisplayVersion>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <EnableMsixTooling>true</EnableMsixTooling>
   </PropertyGroup>

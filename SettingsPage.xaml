@@ -10,6 +10,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0" Text="Settings" FontSize="26" FontWeight="Bold"/>
@@ -24,16 +25,22 @@
         </StackPanel>
 
         <StackPanel Grid.Row="2" Spacing="8">
+            <TextBlock Text="Clipboard" FontSize="16" FontWeight="SemiBold"/>
+            <ToggleSwitch x:Name="ClipToggle" Header="Suggest a tool when the clipboard holds a JWT, JSON, cURL command, timestamp, cron or URL"
+                          OnContent="On" OffContent="Off" Toggled="OnClipToggled"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="3" Spacing="8">
             <TextBlock Text="Data" FontSize="16" FontWeight="SemiBold"/>
             <TextBlock Opacity="0.7" TextWrapping="Wrap"
-                       Text="This app doesn't store or send any of the text, passwords, or files you process in the tools — everything happens locally in memory and is cleared when you close the app. Only your theme choice is saved."/>
+                       Text="This app doesn't store or send any of the text, passwords, or files you process in the tools — everything happens locally in memory and is cleared when you close the app. Only your preferences (theme, favorites) and the last text typed into each tool are saved locally, in %LocalAppData%\ASD. Secrets such as HMAC keys and passwords are never saved."/>
             <Button Content="Reset Settings to Default" Click="OnResetClick" HorizontalAlignment="Left"/>
         </StackPanel>
 
-        <StackPanel Grid.Row="3" Spacing="4">
+        <StackPanel Grid.Row="4" Spacing="4">
             <TextBlock Text="About" FontSize="16" FontWeight="SemiBold"/>
             <TextBlock Text="ASD — Dev Toolbox" Opacity="0.7"/>
-            <TextBlock Text="Version 1.0.0" Opacity="0.7"/>
+            <TextBlock Text="Version 1.1.0  ·  Ctrl+K jumps to any tool" Opacity="0.7"/>
         </StackPanel>
     </Grid>
 </Page>

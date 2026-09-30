@@ -11,7 +11,7 @@
         IsSettingsVisible="False"
         IsPaneOpen="False"
         PaneDisplayMode="Left"
-        SelectionChanged="RootNav_SelectionChanged"
+        ItemInvoked="RootNav_ItemInvoked"
         Loaded="RootNav_Loaded"
         OpenPaneLength="260"
         CompactPaneLength="48"
@@ -22,43 +22,51 @@
         CompactModeThresholdWidth="0"
         ExpandedModeThresholdWidth="10000">
 
+        <!-- Top navigation: 7 tools + "More" = 8 items -->
         <NavigationView.MenuItems>
             <NavigationViewItem Content="Encode / Decode" Tag="encode" ToolTipService.ToolTip="Base64, URL, Hex, ROT13">
-                <NavigationViewItem.Icon>
-                    <FontIcon Glyph="&#xE8C8;" FontSize="16" />
-                </NavigationViewItem.Icon>
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE8C8;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
-            <NavigationViewItem Content="Encrypt / Decrypt" Tag="crypto" ToolTipService.ToolTip="AES Encryption">
-                <NavigationViewItem.Icon>
-                    <SymbolIcon Symbol="Permissions" />
-                </NavigationViewItem.Icon>
+            <NavigationViewItem Content="Encrypt / Decrypt" Tag="crypto" ToolTipService.ToolTip="AES encryption">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE72E;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
-            <NavigationViewItem Content="Hash" Tag="hash" ToolTipService.ToolTip="MD5, SHA-1, SHA-256, SHA-512">
-                <NavigationViewItem.Icon>
-                    <FontIcon Glyph="&#xE73E;" FontSize="16" />
-                </NavigationViewItem.Icon>
+            <NavigationViewItem Content="Hash / HMAC" Tag="hash" ToolTipService.ToolTip="MD5, SHA, HMAC, file hashes">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE73E;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
-            <NavigationViewItem Content="Text Tools" Tag="text" ToolTipService.ToolTip="Case, counters, JSON formatter">
-                <NavigationViewItem.Icon>
-                    <FontIcon Glyph="&#xE8FD;" FontSize="16" />
-                </NavigationViewItem.Icon>
+            <NavigationViewItem Content="JSON Toolkit" Tag="json" ToolTipService.ToolTip="Format, validate, JSONPath, YAML, CSV">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE943;" FontSize="16" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="JWT Decoder" Tag="jwt" ToolTipService.ToolTip="Decode, verify and sign tokens">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE192;" FontSize="16" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Regex Tester" Tag="regex" ToolTipService.ToolTip="Live matches, groups, replace, explain">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE721;" FontSize="16" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Diff Checker" Tag="diff" ToolTipService.ToolTip="Compare two texts">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE8AB;" FontSize="16" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="More" Tag="more" ToolTipService.ToolTip="Timestamp, generators, cron, converters, URL, formatters, cURL, text tools">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE712;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
         </NavigationView.MenuItems>
 
         <NavigationView.FooterMenuItems>
+            <NavigationViewItem Content="Search (Ctrl+K)" Tag="search" SelectsOnInvoked="False" ToolTipService.ToolTip="Jump to any tool (Ctrl+K)">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE721;" FontSize="16" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
             <NavigationViewItem Content="Settings" Tag="settings" ToolTipService.ToolTip="Settings">
-                <NavigationViewItem.Icon>
-                    <SymbolIcon Symbol="Setting" />
-                </NavigationViewItem.Icon>
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE713;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
         </NavigationView.FooterMenuItems>
 
         <Grid>
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
-            <Frame x:Name="ContentFrame" Grid.Row="0" CacheSize="3"
-                   VerticalAlignment="Stretch" HorizontalAlignment="Stretch"/>
+            <InfoBar x:Name="ClipBar" Grid.Row="0" IsOpen="False" Severity="Informational" Margin="12,8,12,0"/>
+            <ContentControl x:Name="ContentHost" Grid.Row="1"
+                            HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" IsTabStop="False"/>
         </Grid>
     </NavigationView>
 </Window>
