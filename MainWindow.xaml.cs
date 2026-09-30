@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml.Input;
 using Windows.ApplicationModel.DataTransfer;
 
@@ -28,6 +29,7 @@ public sealed partial class MainWindow : Window
         }
         catch { /* non-critical, window will show at default size */ }
 
+        RootGrid.ActualThemeChanged += (_, _) => UpdateCaptionColors();
         ApplyTheme(LoadSavedTheme());
         CursorHelper.Initialize(RootNav, Path.Combine(AppContext.BaseDirectory, "Assets", "Cursors"));
 
@@ -54,6 +56,28 @@ public sealed partial class MainWindow : Window
             "dark" => ElementTheme.Dark,
             _ => ElementTheme.Default,
         };
+        UpdateCaptionColors();
+    }
+
+    /// <summary>Makes the minimize / maximize / close buttons match the light or dark theme.</summary>
+    private void UpdateCaptionColors()
+    {
+        try
+        {
+            if (!AppWindowTitleBar.IsCustomizationSupported()) return;
+            var light = RootGrid.ActualTheme == ElementTheme.Light;
+            var fg = light ? Windows.UI.Color.FromArgb(255, 0, 0, 0) : Windows.UI.Color.FromArgb(255, 255, 255, 255);
+            var hover = light ? Windows.UI.Color.FromArgb(25, 0, 0, 0) : Windows.UI.Color.FromArgb(25, 255, 255, 255);
+            var none = Windows.UI.Color.FromArgb(0, 0, 0, 0);
+            var tb = AppWindow.TitleBar;
+            tb.ButtonBackgroundColor = none;
+            tb.ButtonInactiveBackgroundColor = none;
+            tb.ButtonForegroundColor = fg;
+            tb.ButtonHoverForegroundColor = fg;
+            tb.ButtonHoverBackgroundColor = hover;
+            tb.ButtonInactiveForegroundColor = Windows.UI.Color.FromArgb(255, 128, 128, 128);
+        }
+        catch { /* cosmetic only */ }
     }
 
     private static string LoadSavedTheme() => SettingsStore.Get("ThemeMode", "auto");
@@ -61,6 +85,7 @@ public sealed partial class MainWindow : Window
     private void RootNav_Loaded(object sender, RoutedEventArgs e)
     {
         RootNav.IsPaneOpen = false;
+        UpdateCaptionColors();
         OpenTool("ico");
         CursorHelper.ApplyHandCursorToNavItems(RootNav);
     }

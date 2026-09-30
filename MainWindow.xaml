@@ -5,7 +5,7 @@
     xmlns:local="using:ASD"
     Title="ASD">
 
-    <Grid x:Name="RootGrid">
+    <Grid x:Name="RootGrid" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
     <Grid.RowDefinitions>
         <RowDefinition Height="Auto" />   <!-- TitleBar -->
         <RowDefinition Height="*" />      <!-- NavigationView -->
@@ -14,6 +14,7 @@
     <TitleBar
         x:Name="AppTitleBar"
         Grid.Row="0"
+        Background="Transparent"
         Title="ASD"
         IsBackButtonVisible="False"
         IsPaneToggleButtonVisible="True"
@@ -23,9 +24,9 @@
             x:Name="SearchBox"
             PlaceholderText="Search tools  (Ctrl+K)"
             QueryIcon="Find"
-            MinWidth="240"
-            MaxWidth="440"
-            HorizontalAlignment="Center"
+            MinWidth="420"
+            MaxWidth="760"
+            HorizontalAlignment="Stretch"
             VerticalAlignment="Center"
             TextChanged="SearchBox_TextChanged"
             GotFocus="SearchBox_GotFocus"
