@@ -24,7 +24,9 @@ public sealed class ImageConverterPage : ToolPage
     };
 
     private readonly ComboBox _target, _maxSize, _bg;
-    private readonly NumberBox _quality;
+    private readonly NumberBox _quality, _tolerance;
+    private readonly CheckBox _removeBg, _edgesOnly;
+    private readonly StackPanel _optRemoveBg;
     private readonly Dictionary<int, CheckBox> _sizeChecks = new();
     private readonly StackPanel _optJpeg, _optIco;
     private readonly Grid _host = new() { Width = 200, Height = 200 };
@@ -75,6 +77,14 @@ public sealed class ImageConverterPage : ToolPage
         _optJpeg = Row(_quality, _bg);
         _optJpeg.Visibility = Visibility.Collapsed;
 
+        _removeBg = Check("Remove the background (make it transparent)");
+        _tolerance = new NumberBox { Header = "Tolerance %", Value = 15, Minimum = 0, Maximum = 100, Width = 150, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline };
+        _edgesOnly = Check("Only from the edges (keeps same-colour areas inside the picture)", true);
+        _optRemoveBg = Row(_tolerance, _edgesOnly);
+        _optRemoveBg.Visibility = Visibility.Collapsed;
+        _removeBg.Checked += (_, _) => _optRemoveBg.Visibility = Visibility.Visible;
+        _removeBg.Unchecked += (_, _) => _optRemoveBg.Visibility = Visibility.Collapsed;
+
         var sizeRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         foreach (var s in IcoSizes)
         {
@@ -113,6 +123,8 @@ public sealed class ImageConverterPage : ToolPage
         Body.Children.Add(Row(Btn("Choose images…", () => PickFiles()), _fileLabel));
         Body.Children.Add(previewFrame);
         Body.Children.Add(Row(Label("Convert to:"), _target, Label("Max side:"), _maxSize));
+        Body.Children.Add(_removeBg);
+        Body.Children.Add(_optRemoveBg);
         Body.Children.Add(_optJpeg);
         Body.Children.Add(_optIco);
         Body.Children.Add(_convert);
@@ -174,6 +186,14 @@ public sealed class ImageConverterPage : ToolPage
         if (IsSvg(path)) (px, w, h) = await ImageTools.RenderSvgAsync(path, _host, _preview);
         else (px, w, h) = await ImageTools.LoadRasterAsync(path);
 
+        if (_removeBg.IsChecked == true)
+        {
+            int tol = double.IsNaN(_tolerance.Value) ? 15 : (int)_tolerance.Value;
+            bool edges = _edgesOnly.IsChecked == true;
+            var src0 = px; int w0 = w, h0 = h;
+            px = await Task.Run(() => ImageTools.RemoveBackground(src0, w0, h0, tol, edges));
+        }
+
         int max = MaxSide();
         if (max > 0 && Math.Max(w, h) > max)
         {
@@ -196,6 +216,11 @@ public sealed class ImageConverterPage : ToolPage
         {
             if (_files.Count == 0) { Status.Text = "Choose one or more images first."; return; }
             var (label, key, ext) = Targets[Math.Max(0, _target.SelectedIndex)];
+            if (_removeBg.IsChecked == true && key is "jpg" or "bmp")
+            {
+                Status.Text = "⚠ JPEG and BMP cannot store transparency. Choose PNG, ICO, GIF, TIFF or SVG.";
+                return;
+            }
             var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindow);
 
             if (_files.Count == 1)

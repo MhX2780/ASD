@@ -213,7 +213,7 @@ internal static class ImageTools
             sq = new byte[side * side * 4];
             int ox = (w - side) / 2, oy = (h - side) / 2;
             for (int y = 0; y < side; y++)
-                Buffer.BlockCopy(src, ((y + oy) * w + ox) * 4, sq, y * side * 4, side * 4);
+                System.Buffer.BlockCopy(src, ((y + oy) * w + ox) * 4, sq, y * side * 4, side * 4);
         }
         else
         {
@@ -221,7 +221,7 @@ internal static class ImageTools
             sq = new byte[side * side * 4];
             int ox = (side - w) / 2, oy = (side - h) / 2;
             for (int y = 0; y < h; y++)
-                Buffer.BlockCopy(src, y * w * 4, sq, ((y + oy) * side + ox) * 4, w * 4);
+                System.Buffer.BlockCopy(src, y * w * 4, sq, ((y + oy) * side + ox) * 4, w * 4);
         }
         if (side > 1024) { sq = Resize(sq, side, side, 1024, 1024); side = 1024; }
         return (sq, side);
@@ -309,6 +309,118 @@ internal static class ImageTools
             }
         }
         return dst;
+    }
+
+    /// <summary>
+    /// Makes the background transparent. Input and output are premultiplied BGRA.
+    /// The background colour is detected from the four corners.
+    /// <paramref name="tolerancePercent"/> = how far a colour may differ from the background (0-100).
+    /// <paramref name="edgesOnly"/> = only remove background that touches the image border,
+    /// so same-coloured areas inside the subject (e.g. a white eye) are kept.
+    /// </summary>
+    public static byte[] RemoveBackground(byte[] px, int w, int h, int tolerancePercent, bool edgesOnly)
+    {
+        var s = ToStraight(px);
+        int n = w * h;
+
+        // 1) background colour = the corner colour that agrees most with the other corners
+        int[] cornerIdx = { 0, w - 1, (h - 1) * w, n - 1 };
+        int best = 0, bestScore = int.MaxValue;
+        for (int a = 0; a < 4; a++)
+        {
+            int score = 0;
+            for (int b = 0; b < 4; b++) score += ColorDist(s, cornerIdx[a] * 4, s, cornerIdx[b] * 4);
+            if (score < bestScore) { bestScore = score; best = a; }
+        }
+        int bo = cornerIdx[best] * 4;
+        int bb = s[bo], bg = s[bo + 1], br = s[bo + 2];
+
+        // 2) which pixels look like background
+        int t = Math.Clamp(tolerancePercent, 0, 100) * 255 / 100;
+        var dist = new int[n];
+        var cand = new bool[n];
+        for (int p = 0; p < n; p++)
+        {
+            int i = p * 4;
+            if (s[i + 3] == 0) { dist[p] = 0; cand[p] = true; continue; }
+            int d = Math.Max(Math.Abs(s[i] - bb), Math.Max(Math.Abs(s[i + 1] - bg), Math.Abs(s[i + 2] - br)));
+            dist[p] = d;
+            cand[p] = d <= t;
+        }
+
+        // 3) decide what is removed
+        var removed = new bool[n];
+        if (!edgesOnly)
+        {
+            Array.Copy(cand, removed, n);
+        }
+        else
+        {
+            var queue = new int[n];
+            int head = 0, tail = 0;
+            void Push(int p) { if (cand[p] && !removed[p]) { removed[p] = true; queue[tail++] = p; } }
+            for (int x = 0; x < w; x++) { Push(x); Push((h - 1) * w + x); }
+            for (int y = 0; y < h; y++) { Push(y * w); Push(y * w + w - 1); }
+            while (head < tail)
+            {
+                int p = queue[head++];
+                int x = p % w, y = p / w;
+                if (x > 0) Push(p - 1);
+                if (x < w - 1) Push(p + 1);
+                if (y > 0) Push(p - w);
+                if (y < h - 1) Push(p + w);
+            }
+        }
+
+        // 4) write result: removed pixels -> transparent; pixels right next to them get a soft edge
+        //    and their background tint is taken out so no white halo remains
+        var o = new byte[px.Length];
+        int soft = Math.Max(1, t * 8 / 10);
+        for (int p = 0; p < n; p++)
+        {
+            int i = p * 4;
+            if (removed[p]) continue;                       // stays 0,0,0,0
+
+            int alpha = s[i + 3];
+            byte cb = s[i], cg = s[i + 1], cr = s[i + 2];
+
+            if (t > 0 && dist[p] < t + soft && NextToRemoved(removed, p, w, h))
+            {
+                int a = Math.Clamp((dist[p] - t) * 255 / soft, 0, 255);
+                if (a < 255 && a > 0)
+                {
+                    cb = Unmix(cb, bb, a); cg = Unmix(cg, bg, a); cr = Unmix(cr, br, a);
+                    alpha = alpha * a / 255;
+                }
+                else if (a == 0) continue;
+            }
+
+            o[i] = (byte)(cb * alpha / 255);
+            o[i + 1] = (byte)(cg * alpha / 255);
+            o[i + 2] = (byte)(cr * alpha / 255);
+            o[i + 3] = (byte)alpha;
+        }
+        return o;
+    }
+
+    private static int ColorDist(byte[] a, int ia, byte[] b, int ib)
+        => Math.Max(Math.Abs(a[ia] - b[ib]), Math.Max(Math.Abs(a[ia + 1] - b[ib + 1]), Math.Abs(a[ia + 2] - b[ib + 2])));
+
+    private static byte Unmix(byte c, int bgc, int a)
+        => (byte)Math.Clamp((c * 255 - bgc * (255 - a)) / Math.Max(a, 1), 0, 255);
+
+    private static bool NextToRemoved(bool[] removed, int p, int w, int h)
+    {
+        int x = p % w, y = p / w;
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                if (dx == 0 && dy == 0) continue;
+                int nx = x + dx, ny = y + dy;
+                if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                if (removed[ny * w + nx]) return true;
+            }
+        return false;
     }
 
     public static byte[] ToStraight(byte[] px)
