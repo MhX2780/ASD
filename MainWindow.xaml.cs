@@ -8,7 +8,8 @@ namespace ASD;
 public sealed partial class MainWindow : Window
 {
     private ToolInfo? _current;
-    private bool _paletteOpen;
+    private Stack<string> _history = new();
+    private Dictionary<string, ToolInfo> _suggest = new();
     private string _lastClip = "";
     private string? _clipTag, _clipText;
 
@@ -17,6 +18,8 @@ public sealed partial class MainWindow : Window
         this.InitializeComponent();
 
         this.AppWindow.Title = "ASD";
+        this.ExtendsContentIntoTitleBar = true;   // our own TitleBar replaces the default one
+        this.SetTitleBar(AppTitleBar);
 
         // Start maximized (respects DPI, taskbar and window borders)
         try
@@ -25,28 +28,12 @@ public sealed partial class MainWindow : Window
         }
         catch { /* non-critical, window will show at default size */ }
 
-        RootNav.PaneHeader = new Grid
-        {
-            Height = 48,
-            Children =
-            {
-                new TextBlock
-                {
-                    Text = "ASD",
-                    FontSize = 20,
-                    FontWeight = Microsoft.UI.Text.FontWeights.Bold,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Margin = new Thickness(16, 0, 0, 0),
-                }
-            }
-        };
-
         ApplyTheme(LoadSavedTheme());
         CursorHelper.Initialize(RootNav, Path.Combine(AppContext.BaseDirectory, "Assets", "Cursors"));
 
         // Ctrl+K = tool palette
         var accel = new KeyboardAccelerator { Key = Windows.System.VirtualKey.K, Modifiers = Windows.System.VirtualKeyModifiers.Control };
-        accel.Invoked += (_, e) => { e.Handled = true; ShowPalette(); };
+        accel.Invoked += (_, e) => { e.Handled = true; FocusSearch(); };
         RootNav.KeyboardAccelerators.Add(accel);
 
         // Clipboard banner
@@ -61,7 +48,7 @@ public sealed partial class MainWindow : Window
 
     public void ApplyTheme(string mode)
     {
-        RootNav.RequestedTheme = mode switch
+        RootGrid.RequestedTheme = mode switch
         {
             "light" => ElementTheme.Light,
             "dark" => ElementTheme.Dark,
@@ -81,23 +68,76 @@ public sealed partial class MainWindow : Window
     private void RootNav_ItemInvoked(NavigationView sender, NavigationViewItemInvokedEventArgs args)
     {
         if (args.InvokedItemContainer is not NavigationViewItem { Tag: string tag }) return;
-        if (tag == "search") { ShowPalette(); return; }
+        if (tag == "search") { FocusSearch(); return; }
         OpenTool(tag);
     }
 
     /// <summary>Shows a tool. Tools listed under "More" keep the "More" item highlighted.</summary>
-    public void OpenTool(string tag, string? parameter = null)
+    public void OpenTool(string tag, string? parameter = null) => Navigate(tag, parameter, record: true);
+
+    private void Navigate(string tag, string? parameter, bool record)
     {
         var tool = ToolRegistry.Find(tag) ?? ToolRegistry.Find("encode")!;
         SelectNavItem(tool.NavTag);
 
         if (parameter == null && _current?.Tag == tool.Tag && ContentHost.Content != null) return;
 
+        if (record && _current != null)
+        {
+            _history.Push(_current.Tag);
+            if (_history.Count > 50) _history = new Stack<string>(_history.Take(50).Reverse());
+        }
+
         (ContentHost.Content as ToolPage)?.Deactivate();
         var page = tool.Create();
         _current = tool;
         ContentHost.Content = page;
         (page as ToolPage)?.Activate(parameter);
+        AppTitleBar.IsBackButtonVisible = _history.Count > 0;
+    }
+
+    // ───────── title bar: back, pane toggle, search ─────────
+    private void TitleBar_BackRequested(TitleBar sender, object args)
+    {
+        if (_history.Count > 0) Navigate(_history.Pop(), null, record: false);
+        AppTitleBar.IsBackButtonVisible = _history.Count > 0;
+    }
+
+    private void TitleBar_PaneToggleRequested(TitleBar sender, object args)
+        => RootNav.IsPaneOpen = !RootNav.IsPaneOpen;
+
+    private void FocusSearch()
+    {
+        SearchBox.Focus(FocusState.Programmatic);
+    }
+
+    private void FillSuggestions(string? query)
+    {
+        _suggest = ToolRegistry.Search(query).Take(8).ToDictionary(t => $"{t.Title}   —   {t.Description}", t => t);
+        SearchBox.ItemsSource = _suggest.Keys.ToList();
+    }
+
+    private void SearchBox_GotFocus(object sender, RoutedEventArgs e)
+    {
+        FillSuggestions(SearchBox.Text);
+        SearchBox.IsSuggestionListOpen = true;
+    }
+
+    private void SearchBox_TextChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args)
+    {
+        if (args.Reason != AutoSuggestionBoxTextChangeReason.UserInput) return;
+        FillSuggestions(sender.Text);
+    }
+
+    private void SearchBox_QuerySubmitted(AutoSuggestBox sender, AutoSuggestBoxQuerySubmittedEventArgs args)
+    {
+        ToolInfo? tool = null;
+        if (args.ChosenSuggestion is string s && _suggest.TryGetValue(s, out var t)) tool = t;
+        else tool = ToolRegistry.Search(args.QueryText).FirstOrDefault();
+
+        sender.Text = "";
+        sender.ItemsSource = null;
+        if (tool != null) OpenTool(tool.Tag);
     }
 
     private void SelectNavItem(string navTag)
@@ -106,57 +146,6 @@ public sealed partial class MainWindow : Window
             .OfType<NavigationViewItem>()
             .FirstOrDefault(i => i.Tag as string == navTag);
         if (item != null) RootNav.SelectedItem = item;
-    }
-
-    // ───────── Ctrl+K palette ─────────
-    private async void ShowPalette()
-    {
-        if (_paletteOpen || RootNav.XamlRoot == null) return;
-        _paletteOpen = true;
-        try
-        {
-            var box = new TextBox { PlaceholderText = "Type a tool name…", IsSpellCheckEnabled = false };
-            var list = new ListView { MaxHeight = 320, SelectionMode = ListViewSelectionMode.Single };
-            var shown = new List<ToolInfo>();
-            ToolInfo? chosen = null;
-
-            void Refresh()
-            {
-                shown = ToolRegistry.Search(box.Text).ToList();
-                list.ItemsSource = shown.Select(t => $"{t.Title}   —   {t.Description}").ToList();
-                if (shown.Count > 0) list.SelectedIndex = 0;
-            }
-
-            Refresh();
-            box.TextChanged += (_, _) => Refresh();
-            box.KeyDown += (_, e) =>
-            {
-                if (e.Key == Windows.System.VirtualKey.Down && list.SelectedIndex < shown.Count - 1) { list.SelectedIndex++; e.Handled = true; }
-                else if (e.Key == Windows.System.VirtualKey.Up && list.SelectedIndex > 0) { list.SelectedIndex--; e.Handled = true; }
-            };
-
-            var dlg = new ContentDialog
-            {
-                XamlRoot = RootNav.XamlRoot,
-                Title = "Go to tool",
-                PrimaryButtonText = "Open",
-                CloseButtonText = "Cancel",
-                DefaultButton = ContentDialogButton.Primary,
-                Content = new StackPanel { Spacing = 8, Width = 480, Children = { box, list } },
-            };
-            list.DoubleTapped += (_, _) =>
-            {
-                if (list.SelectedIndex >= 0 && list.SelectedIndex < shown.Count) { chosen = shown[list.SelectedIndex]; dlg.Hide(); }
-            };
-            dlg.Opened += (_, _) => box.Focus(FocusState.Programmatic);
-
-            var result = await dlg.ShowAsync();
-            if (result == ContentDialogResult.Primary && list.SelectedIndex >= 0 && list.SelectedIndex < shown.Count)
-                chosen = shown[list.SelectedIndex];
-            if (chosen != null) OpenTool(chosen.Tag);
-        }
-        catch { /* palette is a convenience: never crash */ }
-        finally { _paletteOpen = false; }
     }
 
     // ───────── clipboard banner ─────────

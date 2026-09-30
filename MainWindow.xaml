@@ -5,8 +5,36 @@
     xmlns:local="using:ASD"
     Title="ASD">
 
+    <Grid x:Name="RootGrid">
+    <Grid.RowDefinitions>
+        <RowDefinition Height="Auto" />   <!-- TitleBar -->
+        <RowDefinition Height="*" />      <!-- NavigationView -->
+    </Grid.RowDefinitions>
+
+    <TitleBar
+        x:Name="AppTitleBar"
+        Grid.Row="0"
+        Title="ASD"
+        IsBackButtonVisible="False"
+        IsPaneToggleButtonVisible="True"
+        BackRequested="TitleBar_BackRequested"
+        PaneToggleRequested="TitleBar_PaneToggleRequested">
+        <AutoSuggestBox
+            x:Name="SearchBox"
+            PlaceholderText="Search tools  (Ctrl+K)"
+            QueryIcon="Find"
+            MinWidth="240"
+            MaxWidth="440"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            TextChanged="SearchBox_TextChanged"
+            GotFocus="SearchBox_GotFocus"
+            QuerySubmitted="SearchBox_QuerySubmitted" />
+    </TitleBar>
+
     <NavigationView
         x:Name="RootNav"
+        Grid.Row="1"
         IsBackButtonVisible="Collapsed"
         IsSettingsVisible="False"
         IsPaneOpen="False"
@@ -16,7 +44,7 @@
         OpenPaneLength="260"
         CompactPaneLength="48"
         Background="{ThemeResource ApplicationPageBackgroundThemeBrush}"
-        IsPaneToggleButtonVisible="True"
+        IsPaneToggleButtonVisible="False"
         IsTitleBarAutoPaddingEnabled="False"
         AlwaysShowHeader="False"
         CompactModeThresholdWidth="0"
@@ -69,4 +97,5 @@
                             HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" IsTabStop="False"/>
         </Grid>
     </NavigationView>
+    </Grid>
 </Window>

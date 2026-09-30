@@ -54,11 +54,12 @@ public sealed class MorePage : ToolPage
         {
             Spacing = 4,
             Margin = new Thickness(0, 0, 26, 0),
+            HorizontalAlignment = HorizontalAlignment.Left,
             Children =
             {
-                new FontIcon { Glyph = t.Glyph, FontSize = 20 },
-                new TextBlock { Text = t.Title, FontWeight = FontWeights.Bold, FontSize = 16 },
-                new TextBlock { Text = t.Description, Opacity = 0.7, FontSize = 12, TextWrapping = TextWrapping.Wrap },
+                new FontIcon { Glyph = t.Glyph, FontSize = 22, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 4) },
+                new TextBlock { Text = t.Title, FontWeight = FontWeights.Bold, FontSize = 16, HorizontalAlignment = HorizontalAlignment.Left },
+                new TextBlock { Text = t.Description, Opacity = 0.7, FontSize = 12, TextWrapping = TextWrapping.Wrap, HorizontalAlignment = HorizontalAlignment.Left },
             },
         };
         var main = new Button
