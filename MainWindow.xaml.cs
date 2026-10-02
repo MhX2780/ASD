@@ -22,6 +22,15 @@ public sealed partial class MainWindow : Window
         this.ExtendsContentIntoTitleBar = true;   // our own TitleBar replaces the default one
         this.SetTitleBar(AppTitleBar);
 
+        // Tall title bar (48 px): makes the system minimize / maximize / close buttons
+        // as tall as our toolbar instead of the default 32 px.
+        try
+        {
+            if (AppWindowTitleBar.IsCustomizationSupported())
+                AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
+        }
+        catch { /* cosmetic only */ }
+
         // Start maximized (respects DPI, taskbar and window borders)
         try
         {
@@ -31,7 +40,10 @@ public sealed partial class MainWindow : Window
 
         RootGrid.ActualThemeChanged += (_, _) => UpdateCaptionColors();
         ApplyTheme(LoadSavedTheme());
-        CursorHelper.Initialize(RootNav, Path.Combine(AppContext.BaseDirectory, "Assets", "Cursors"));
+        // RootGrid (not RootNav) so the title bar is covered too, not just the navigation area.
+        CursorHelper.Initialize(RootGrid, Path.Combine(AppContext.BaseDirectory, "Assets", "Cursors"));
+        CursorHelper.HookWindowFrame(WinRT.Interop.WindowNative.GetWindowHandle(this));   // drag area + min/max/close
+        AppTitleBar.Loaded += (_, _) => CursorHelper.ApplyHandCursorToButtons(AppTitleBar); // back + pane-toggle buttons
 
         // Ctrl+K = tool palette
         var accel = new KeyboardAccelerator { Key = Windows.System.VirtualKey.K, Modifiers = Windows.System.VirtualKeyModifiers.Control };

@@ -27,6 +27,10 @@ public static class CursorHelper
     private static InputCursor _hand = InputSystemCursor.Create(InputSystemCursorShape.Hand);
     private static bool _dark;
 
+    // Raw HCURSOR handles: the window frame (title-bar drag area, min/max/close) is not XAML,
+    // so it can only be given a cursor through the native WM_SETCURSOR message.
+    private static nint _ptrLightH, _ptrDarkH, _handLightH, _handDarkH;
+
     private static WeakReference<UIElement>? _root;
     private static readonly List<WeakReference<UIElement>> _handTargets = new();
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<UIElement, object> _seen = new();
@@ -39,10 +43,10 @@ public static class CursorHelper
     {
         _root = new WeakReference<UIElement>(rootElement);
 
-        _ptrLight = TryLoad(cursorsFolder, "Li_pointer.cur", "Li_poitner.cur", "pointer.cur");
-        _ptrDark  = TryLoad(cursorsFolder, "Dr_pointer.cur", "Dr_poitner.cur", "pointer.cur");
-        _handLight = TryLoad(cursorsFolder, "Li_hand.cur", "hand.cur");
-        _handDark  = TryLoad(cursorsFolder, "Dr_hand.cur", "hand.cur");
+        _ptrLight = TryLoad(cursorsFolder, out _ptrLightH, "Li_pointer.cur", "Li_poitner.cur", "pointer.cur");
+        _ptrDark  = TryLoad(cursorsFolder, out _ptrDarkH, "Dr_pointer.cur", "Dr_poitner.cur", "pointer.cur");
+        _handLight = TryLoad(cursorsFolder, out _handLightH, "Li_hand.cur", "hand.cur");
+        _handDark  = TryLoad(cursorsFolder, out _handDarkH, "Dr_hand.cur", "hand.cur");
 
         Apply();
     }
@@ -71,15 +75,19 @@ public static class CursorHelper
             if (w.TryGetTarget(out var el)) ChangeCursor(el, _hand);
     }
 
-    private static InputCursor? TryLoad(string folder, params string[] names)
+    private static InputCursor? TryLoad(string folder, out nint handle, params string[] names)
     {
+        handle = 0;
         foreach (var name in names)
         {
             try
             {
                 var path = Path.Combine(folder, name);
                 if (!File.Exists(path)) continue;
-                var c = LoadCursorFromFile(path);
+                var h = LoadCursorFromFileW(path);
+                if (h == 0) continue;
+                handle = h;
+                var c = CreateCursorFromHCursor(h);
                 if (c != null) return c;
             }
             catch { /* try the next name */ }
@@ -131,6 +139,50 @@ public static class CursorHelper
         }
     }
 
+    // ───────── window frame (title-bar drag area + caption buttons) ─────────
+    // With ExtendsContentIntoTitleBar the empty part of the title bar and the min/max/close
+    // buttons belong to the non-client area. Windows owns the cursor there, so XAML's
+    // ProtectedCursor has no effect. We intercept WM_SETCURSOR on the top-level window instead.
+    private const uint WM_SETCURSOR = 0x0020;
+    private const int HTCAPTION = 2, HTSYSMENU = 3, HTMINBUTTON = 8, HTMAXBUTTON = 9, HTCLOSE = 20;
+    private const int IDC_ARROW = 32512, IDC_HAND = 32649;
+
+    private delegate nint SubclassProc(nint hWnd, uint msg, nint wParam, nint lParam, nint id, nint data);
+    private static SubclassProc? _subclassProc;   // static: must stay alive as long as the window
+
+    private static nint PointerHandle()
+    {
+        var h = _dark ? (_ptrLightH != 0 ? _ptrLightH : _ptrDarkH) : (_ptrDarkH != 0 ? _ptrDarkH : _ptrLightH);
+        return h != 0 ? h : LoadCursorW(0, IDC_ARROW);
+    }
+
+    private static nint HandHandle()
+    {
+        var h = _dark ? (_handLightH != 0 ? _handLightH : _handDarkH) : (_handDarkH != 0 ? _handDarkH : _handLightH);
+        return h != 0 ? h : LoadCursorW(0, IDC_HAND);
+    }
+
+    /// <summary>Gives the title-bar drag area your pointer, and the caption buttons your hand cursor.</summary>
+    public static void HookWindowFrame(nint hwnd)
+    {
+        _subclassProc = (h, msg, wParam, lParam, id, data) =>
+        {
+            if (msg == WM_SETCURSOR)
+            {
+                int hit = (int)((long)lParam & 0xFFFF);
+                nint cursor = hit switch
+                {
+                    HTCAPTION or HTSYSMENU => PointerHandle(),
+                    HTMINBUTTON or HTMAXBUTTON or HTCLOSE => HandHandle(),
+                    _ => 0,
+                };
+                if (cursor != 0) { SetCursor(cursor); return 1; }
+            }
+            return DefSubclassProc(h, msg, wParam, lParam);
+        };
+        SetWindowSubclass(hwnd, _subclassProc, 1, 0);
+    }
+
     // ProtectedCursor is protected on UIElement with no public equivalent, so it's set via
     // reflection. This is the community-standard workaround (also used by Microsoft's own
     // samples for this exact gap in the WinAppSDK).
@@ -147,14 +199,6 @@ public static class CursorHelper
         {
             // Cosmetic only: never let a cursor failure crash the app.
         }
-    }
-
-    private static InputCursor? LoadCursorFromFile(string filePath)
-    {
-        var hcursor = LoadCursorFromFileW(filePath);
-        if (hcursor == 0)
-            throw new Win32Exception(Marshal.GetLastWin32Error());
-        return CreateCursorFromHCursor(hcursor);
     }
 
     private static InputCursor? CreateCursorFromHCursor(nint hcursor)
@@ -202,6 +246,18 @@ public static class CursorHelper
 
     [DllImport("user32", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern nint LoadCursorFromFileW(string name);
+
+    [DllImport("user32", SetLastError = true)]
+    private static extern nint LoadCursorW(nint hInstance, nint lpCursorName);
+
+    [DllImport("user32")]
+    private static extern nint SetCursor(nint hCursor);
+
+    [DllImport("comctl32", SetLastError = true)]
+    private static extern bool SetWindowSubclass(nint hWnd, SubclassProc pfnSubclass, nint uIdSubclass, nint dwRefData);
+
+    [DllImport("comctl32")]
+    private static extern nint DefSubclassProc(nint hWnd, uint msg, nint wParam, nint lParam);
 
     [DllImport("api-ms-win-core-winrt-string-l1-1-0", CharSet = CharSet.Unicode)]
     private static extern int WindowsCreateString(string? sourceString, int length, out nint @string);
