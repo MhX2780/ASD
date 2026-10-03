@@ -31,7 +31,7 @@ public sealed partial class UpdateWindow : Window
     public UpdateWindow()
     {
         InitializeComponent();
-        Title = "ASD Update";
+        AppWindow.Title = "ASD Update";
 
         RootGrid.RequestedTheme = SettingsStore.Get("ThemeMode", "auto") switch
         {
@@ -47,30 +47,89 @@ public sealed partial class UpdateWindow : Window
             _cts.Cancel();
             _instance = null;
         };
-        RootGrid.Loaded += async (_, _) => await RunAsync();
+        RootGrid.Loaded += async (_, _) =>
+        {
+            // Same cursors as the main window (pointer + hand on buttons), if the cursor files exist
+            CursorHelper.ApplyPointer(RootGrid);
+            CursorHelper.ApplyHandCursorToButtons(RootGrid);
+            await RunAsync();
+        };
     }
 
     // ───────── window frame ─────────
 
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr hwnd);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+    private const int GWLP_HWNDPARENT = -8;   // for a top-level window this sets its OWNER
 
     private void SetupWindowFrame()
     {
         try
         {
             var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+
+            // Our own transparent title bar (same approach as the main window): Mica covers it too
+            ExtendsContentIntoTitleBar = true;
+            SetTitleBar(AppTitleBar);
+            try
+            {
+                if (AppWindowTitleBar.IsCustomizationSupported())
+                    AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
+            }
+            catch { /* cosmetic only */ }
+            RootGrid.ActualThemeChanged += (_, _) => UpdateCaptionColors();
+            UpdateCaptionColors();
+
+            // Owned by the main window: always drawn above it, minimizes/restores with it
+            var main = App.MainWindow;
+            if (main != null)
+                SetWindowLongPtr(hwnd, GWLP_HWNDPARENT, WinRT.Interop.WindowNative.GetWindowHandle(main));
+
             double scale = GetDpiForWindow(hwnd) / 96.0;
             int w = (int)(520 * scale), h = (int)(460 * scale);
             AppWindow.Resize(new SizeInt32(w, h));
 
-            var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
+            // Centered over the main window (or over the screen if the main window is minimized)
+            RectInt32 area;
+            var mainApp = main?.AppWindow;
+            bool mainMinimized = mainApp == null || (mainApp.Presenter as OverlappedPresenter)?.State == OverlappedPresenterState.Minimized;
+            if (!mainMinimized)
+                area = new RectInt32(mainApp!.Position.X, mainApp.Position.Y, mainApp.Size.Width, mainApp.Size.Height);
+            else
+                area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
             AppWindow.Move(new PointInt32(area.X + (area.Width - w) / 2, area.Y + (area.Height - h) / 2));
 
             if (AppWindow.Presenter is OverlappedPresenter p)
             {
                 p.IsResizable = false;
                 p.IsMaximizable = false;
+                p.IsMinimizable = false;
             }
+
+            // Pointer cursor on the title bar, hand cursor on its buttons (same as the main window)
+            CursorHelper.HookWindowFrame(hwnd);
+        }
+        catch { /* cosmetic only */ }
+    }
+
+    /// <summary>Makes the minimize / close buttons transparent and matches them to the light or dark theme.</summary>
+    private void UpdateCaptionColors()
+    {
+        try
+        {
+            if (!AppWindowTitleBar.IsCustomizationSupported()) return;
+            var light = RootGrid.ActualTheme == ElementTheme.Light;
+            var fg = light ? Windows.UI.Color.FromArgb(255, 0, 0, 0) : Windows.UI.Color.FromArgb(255, 255, 255, 255);
+            var hover = light ? Windows.UI.Color.FromArgb(25, 0, 0, 0) : Windows.UI.Color.FromArgb(25, 255, 255, 255);
+            var none = Windows.UI.Color.FromArgb(0, 0, 0, 0);
+            var tb = AppWindow.TitleBar;
+            tb.ButtonBackgroundColor = none;
+            tb.ButtonInactiveBackgroundColor = none;
+            tb.ButtonForegroundColor = fg;
+            tb.ButtonHoverForegroundColor = fg;
+            tb.ButtonHoverBackgroundColor = hover;
+            tb.ButtonInactiveForegroundColor = Windows.UI.Color.FromArgb(255, 128, 128, 128);
         }
         catch { /* cosmetic only */ }
     }
@@ -188,6 +247,7 @@ public sealed partial class UpdateWindow : Window
 
         RetryButton.Visibility = retry ? Visibility.Visible : Visibility.Collapsed;
         CloseButton.Visibility = close ? Visibility.Visible : Visibility.Collapsed;
+        CursorHelper.ApplyHandCursorToButtons(RootGrid);
     }
 
     private async void OnRetryClick(object sender, RoutedEventArgs e) => await RunAsync();

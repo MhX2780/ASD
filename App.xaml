@@ -11,6 +11,9 @@
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
 
+            <!-- Mica: pages/windows must not paint an opaque background over the backdrop -->
+            <SolidColorBrush x:Key="ApplicationPageBackgroundThemeBrush" Color="Transparent"/>
+
             <!-- Navigation: transparent backgrounds -->
             <SolidColorBrush x:Key="NavigationViewContentGridBorderBrush" Color="Transparent"/>
             <SolidColorBrush x:Key="NavigationViewDefaultPaneBackground" Color="Transparent"/>

@@ -5,7 +5,11 @@
     xmlns:local="using:ASD"
     Title="ASD">
 
-    <Grid x:Name="RootGrid" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="RootGrid" Background="Transparent">
     <Grid.RowDefinitions>
         <RowDefinition Height="Auto" />   <!-- TitleBar -->
         <RowDefinition Height="*" />      <!-- NavigationView -->
@@ -44,7 +48,7 @@
         Loaded="RootNav_Loaded"
         OpenPaneLength="260"
         CompactPaneLength="48"
-        Background="{ThemeResource ApplicationPageBackgroundThemeBrush}"
+        Background="Transparent"
         IsPaneToggleButtonVisible="False"
         IsTitleBarAutoPaddingEnabled="False"
         AlwaysShowHeader="False"

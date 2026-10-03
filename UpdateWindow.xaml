@@ -4,8 +4,21 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="ASD Update">
 
-    <Grid x:Name="RootGrid" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}" Padding="36,24">
-        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Stretch" Spacing="16">
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="RootGrid" Background="Transparent">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>   <!-- TitleBar -->
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Transparent: the Mica backdrop shows through the title bar too (no white strip) -->
+        <TitleBar x:Name="AppTitleBar" Grid.Row="0" Title="ASD Update" Background="Transparent"
+                  IsBackButtonVisible="False" IsPaneToggleButtonVisible="False"/>
+
+        <StackPanel Grid.Row="1" Margin="36,0,36,24" VerticalAlignment="Center" HorizontalAlignment="Stretch" Spacing="16">
 
             <!-- Visual: progress ring → Windows "update" icon (or a result icon) -->
             <Grid Height="112" HorizontalAlignment="Center" Width="112">

@@ -125,6 +125,9 @@ public static class CursorHelper
         foreach (var item in navView.FooterMenuItems.OfType<UIElement>()) ApplyHand(item);
     }
 
+    /// <summary>Gives an element (e.g. the root of a secondary window) the app's pointer cursor.</summary>
+    public static void ApplyPointer(UIElement element) => ChangeCursor(element, _ptr);
+
     private static IEnumerable<T> FindDescendants<T>(DependencyObject root) where T : DependencyObject
     {
         int count = VisualTreeHelper.GetChildrenCount(root);
@@ -148,7 +151,8 @@ public static class CursorHelper
     private const int IDC_ARROW = 32512, IDC_HAND = 32649;
 
     private delegate nint SubclassProc(nint hWnd, uint msg, nint wParam, nint lParam, nint id, nint data);
-    private static SubclassProc? _subclassProc;   // static: must stay alive as long as the window
+    private static readonly List<SubclassProc> _subclassProcs = new();   // static: must stay alive as long as the windows
+    private static nint _nextSubclassId = 1;
 
     private static nint PointerHandle()
     {
@@ -165,7 +169,7 @@ public static class CursorHelper
     /// <summary>Gives the title-bar drag area your pointer, and the caption buttons your hand cursor.</summary>
     public static void HookWindowFrame(nint hwnd)
     {
-        _subclassProc = (h, msg, wParam, lParam, id, data) =>
+        SubclassProc proc = (h, msg, wParam, lParam, id, data) =>
         {
             if (msg == WM_SETCURSOR)
             {
@@ -180,7 +184,8 @@ public static class CursorHelper
             }
             return DefSubclassProc(h, msg, wParam, lParam);
         };
-        SetWindowSubclass(hwnd, _subclassProc, 1, 0);
+        _subclassProcs.Add(proc);
+        SetWindowSubclass(hwnd, proc, _nextSubclassId++, 0);
     }
 
     // ProtectedCursor is protected on UIElement with no public equivalent, so it's set via
