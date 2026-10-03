@@ -20,7 +20,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="app.ico" />
+    <!-- app.ico is copied next to ASD.exe: AppWindow.SetTaskbarIcon needs a real file path -->
+    <Content Include="app.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Assets\SplashIcon.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="Assets\Cursors\**\*.cur">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

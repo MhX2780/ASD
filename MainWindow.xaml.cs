@@ -2,6 +2,8 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media.Animation;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.ApplicationModel.DataTransfer;
 
 namespace ASD;
@@ -19,6 +21,7 @@ public sealed partial class MainWindow : Window
         this.InitializeComponent();
 
         this.AppWindow.Title = "ASD";
+        WindowChrome.ApplyTaskbarIcon(AppWindow);   // app.ico on the taskbar button
         this.ExtendsContentIntoTitleBar = true;   // our own TitleBar replaces the default one
         this.SetTitleBar(AppTitleBar);
 
@@ -101,6 +104,7 @@ public sealed partial class MainWindow : Window
         UpdateCaptionColors();
         OpenTool("home");
         CursorHelper.ApplyHandCursorToNavItems(RootNav);
+        _splash = PlaySplashAsync();
         _ = CheckForUpdateOnStartupAsync();
     }
 
@@ -240,6 +244,7 @@ public sealed partial class MainWindow : Window
 
             _updatePrompted = true;
             UpdatesBadge.Visibility = Visibility.Visible;
+            await _splash;   // never show the dialog on top of the splash
 
             var dialog = new ContentDialog
             {
@@ -273,5 +278,50 @@ public sealed partial class MainWindow : Window
         {
             // offline, GitHub unreachable, another dialog already open ... never bother the user at startup
         }
+    }
+
+    // ───────── splash ─────────
+    private Task _splash = Task.CompletedTask;
+
+    /// <summary>
+    /// Startup splash: the app icon fades in on a plain background, stays a moment, then the whole
+    /// overlay fades out and the app is revealed. Never blocks or breaks the app: if the icon file is
+    /// missing or anything fails, the overlay is simply removed.
+    /// </summary>
+    private async Task PlaySplashAsync()
+    {
+        try
+        {
+            var png = Path.Combine(AppContext.BaseDirectory, "Assets", "SplashIcon.png");
+            if (!File.Exists(png)) return;
+
+            SplashIcon.Source = new BitmapImage(new Uri(png));
+            await FadeAsync(SplashIcon, 0, 1, 300);     // icon appears
+            await Task.Delay(600);                      // stays
+            await FadeAsync(SplashOverlay, 1, 0, 450);  // everything fades, app revealed
+        }
+        catch { /* cosmetic only */ }
+        finally
+        {
+            SplashOverlay.Visibility = Visibility.Collapsed;   // also stops it from catching clicks
+        }
+    }
+
+    private static Task FadeAsync(UIElement target, double from, double to, int milliseconds)
+    {
+        var done = new TaskCompletionSource();
+        var animation = new DoubleAnimation
+        {
+            From = from,
+            To = to,
+            Duration = new Duration(TimeSpan.FromMilliseconds(milliseconds)),
+        };
+        Storyboard.SetTarget(animation, target);
+        Storyboard.SetTargetProperty(animation, "Opacity");
+        var storyboard = new Storyboard();
+        storyboard.Children.Add(animation);
+        storyboard.Completed += (_, _) => done.TrySetResult();
+        storyboard.Begin();
+        return done.Task;
     }
 }

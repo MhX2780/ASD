@@ -90,5 +90,12 @@
                             HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" IsTabStop="False"/>
         </Grid>
     </NavigationView>
+
+        <!-- Splash: only the app icon, then the whole overlay fades out and the app shows (see PlaySplashAsync) -->
+        <Grid x:Name="SplashOverlay" Grid.Row="0" Grid.RowSpan="2"
+              Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
+            <Image x:Name="SplashIcon" Width="128" Height="128" Opacity="0"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Grid>
     </Grid>
 </Window>

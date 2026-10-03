@@ -30,6 +30,7 @@ public sealed partial class InstallWindow : Window
         InitializeComponent();
         _systemBrush = StatusIcon.Foreground;
         AppWindow.Title = "Install ASD";
+        WindowChrome.ApplyTaskbarIcon(AppWindow);
 
         RootGrid.RequestedTheme = SettingsStore.Get("ThemeMode", "auto") switch
         {
