@@ -17,6 +17,7 @@ public sealed partial class UpdateWindow : Window
     private readonly CancellationTokenSource _cts = new();
     private bool _running;
     private bool _installing;
+    private Brush? _systemBrush;   // the system accent color (set in XAML), used by every non-status icon
 
     private enum Visual { Ring, Logo, Success, Error }
 
@@ -31,6 +32,7 @@ public sealed partial class UpdateWindow : Window
     public UpdateWindow()
     {
         InitializeComponent();
+        _systemBrush = StatusIcon.Foreground;
         AppWindow.Title = "ASD Update";
 
         RootGrid.RequestedTheme = SettingsStore.Get("ThemeMode", "auto") switch
@@ -205,16 +207,23 @@ public sealed partial class UpdateWindow : Window
         StatusIcon.Visibility = icon ? Visibility.Visible : Visibility.Collapsed;
         if (icon)
         {
-            string glyph;
-            int r, g, b;
+            // Only the result icons get their own color (green check / red warning);
+            // everything else uses the system accent color, like the progress ring.
             switch (visual)
             {
-                case Visual.Success: glyph = "\uE930"; (r, g, b) = (0x1E, 0xA8, 0x4B); break;   // green check
-                case Visual.Error:   glyph = "\uE7BA"; (r, g, b) = (0xE0, 0x4A, 0x3C); break;   // red warning
-                default:             glyph = "\uE777"; (r, g, b) = (0x3B, 0x8E, 0xEA); break;   // blue Windows "update" icon
+                case Visual.Success:
+                    StatusIcon.Glyph = "\uE930";
+                    StatusIcon.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 0x1E, 0xA8, 0x4B));
+                    break;
+                case Visual.Error:
+                    StatusIcon.Glyph = "\uE7BA";
+                    StatusIcon.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 0xE0, 0x4A, 0x3C));
+                    break;
+                default:
+                    StatusIcon.Glyph = "\uE777";   // Windows "update" icon
+                    StatusIcon.Foreground = _systemBrush ?? new SolidColorBrush(Microsoft.UI.Colors.DodgerBlue);
+                    break;
             }
-            StatusIcon.Glyph = glyph;
-            StatusIcon.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, (byte)r, (byte)g, (byte)b));
         }
 
         TitleText.Text = title;

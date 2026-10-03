@@ -23,6 +23,7 @@
                 <ProgressRing x:Name="Ring" IsActive="False" Width="64" Height="64" Visibility="Collapsed"
                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 <FontIcon x:Name="StatusIcon" Glyph="&#xE838;" FontSize="64"
+                          Foreground="{ThemeResource AccentFillColorDefaultBrush}"
                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Grid>
 

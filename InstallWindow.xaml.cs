@@ -22,10 +22,12 @@ public sealed partial class InstallWindow : Window
 
     private readonly CancellationTokenSource _cts = new();
     private bool _busy;
+    private Brush? _systemBrush;   // the system accent color (set in XAML), used by every non-status icon
 
     public InstallWindow()
     {
         InitializeComponent();
+        _systemBrush = StatusIcon.Foreground;
         AppWindow.Title = "Install ASD";
 
         RootGrid.RequestedTheme = SettingsStore.Get("ThemeMode", "auto") switch
@@ -284,16 +286,22 @@ public sealed partial class InstallWindow : Window
         Ring.Visibility = icon == Icon.Ring ? Visibility.Visible : Visibility.Collapsed;
         StatusIcon.Visibility = icon == Icon.Ring ? Visibility.Collapsed : Visibility.Visible;
 
-        string glyph;
-        int r, g, b;
+        // Result icons keep their own color (green check / red warning); the folder icon uses the system accent color
         switch (icon)
         {
-            case Icon.Success: glyph = ""; (r, g, b) = (0x1E, 0xA8, 0x4B); break;   // green check
-            case Icon.Error:   glyph = ""; (r, g, b) = (0xE0, 0x4A, 0x3C); break;   // red warning
-            default:           glyph = ""; (r, g, b) = (0x3B, 0x8E, 0xEA); break;   // blue folder
+            case Icon.Success:
+                StatusIcon.Glyph = "\uE930";
+                StatusIcon.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 0x1E, 0xA8, 0x4B));
+                break;
+            case Icon.Error:
+                StatusIcon.Glyph = "\uE7BA";
+                StatusIcon.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 0xE0, 0x4A, 0x3C));
+                break;
+            default:
+                StatusIcon.Glyph = "\uE838";   // folder
+                StatusIcon.Foreground = _systemBrush ?? new SolidColorBrush(Microsoft.UI.Colors.DodgerBlue);
+                break;
         }
-        StatusIcon.Glyph = glyph;
-        StatusIcon.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, (byte)r, (byte)g, (byte)b));
 
         TitleText.Text = title;
         DetailText.Text = detail;
