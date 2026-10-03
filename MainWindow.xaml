@@ -55,31 +55,13 @@
         CompactModeThresholdWidth="0"
         ExpandedModeThresholdWidth="10000">
 
-        <!-- Top navigation: 7 tools + "More" = 8 items -->
+        <!-- Top navigation: Home + Toolbox (every tool lives in the Toolbox) -->
         <NavigationView.MenuItems>
-            <NavigationViewItem Content="Image → ICO" Tag="ico" ToolTipService.ToolTip="Convert any image (even SVG) to icon.ico">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE91B;" FontSize="16" /></NavigationViewItem.Icon>
+            <NavigationViewItem Content="Home" Tag="home" ToolTipService.ToolTip="Home">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE80F;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
-            <NavigationViewItem Content="Encode / Decode" Tag="encode" ToolTipService.ToolTip="Base64, URL, Hex, ROT13">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE8C8;" FontSize="16" /></NavigationViewItem.Icon>
-            </NavigationViewItem>
-            <NavigationViewItem Content="Encrypt / Decrypt" Tag="crypto" ToolTipService.ToolTip="AES encryption">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE72E;" FontSize="16" /></NavigationViewItem.Icon>
-            </NavigationViewItem>
-            <NavigationViewItem Content="Hash / HMAC" Tag="hash" ToolTipService.ToolTip="MD5, SHA, HMAC, file hashes">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE73E;" FontSize="16" /></NavigationViewItem.Icon>
-            </NavigationViewItem>
-            <NavigationViewItem Content="JSON Toolkit" Tag="json" ToolTipService.ToolTip="Format, validate, JSONPath, YAML, CSV">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE943;" FontSize="16" /></NavigationViewItem.Icon>
-            </NavigationViewItem>
-            <NavigationViewItem Content="JWT Decoder" Tag="jwt" ToolTipService.ToolTip="Decode, verify and sign tokens">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE192;" FontSize="16" /></NavigationViewItem.Icon>
-            </NavigationViewItem>
-            <NavigationViewItem Content="Regex Tester" Tag="regex" ToolTipService.ToolTip="Live matches, groups, replace, explain">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE721;" FontSize="16" /></NavigationViewItem.Icon>
-            </NavigationViewItem>
-            <NavigationViewItem Content="More" Tag="more" ToolTipService.ToolTip="Image converter, process tracker, diff, timestamp, generators, cron, converters, URL, formatters, cURL, text tools">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE712;" FontSize="16" /></NavigationViewItem.Icon>
+            <NavigationViewItem Content="Toolbox" Tag="more" ToolTipService.ToolTip="All tools: Image → ICO, Encode / Decode, Encrypt / Decrypt, Hash, JSON, JWT, Regex, Diff, Process Tracker, Image Converter, Timestamp, Generators, Cron, Converters, URL, Formatters, cURL, HTTP Track, HTTP Download, Text Tools">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xEC7A;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
         </NavigationView.MenuItems>
 

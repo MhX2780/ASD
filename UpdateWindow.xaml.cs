@@ -113,26 +113,7 @@ public sealed partial class UpdateWindow : Window
         catch { /* cosmetic only */ }
     }
 
-    /// <summary>Makes the minimize / close buttons transparent and matches them to the light or dark theme.</summary>
-    private void UpdateCaptionColors()
-    {
-        try
-        {
-            if (!AppWindowTitleBar.IsCustomizationSupported()) return;
-            var light = RootGrid.ActualTheme == ElementTheme.Light;
-            var fg = light ? Windows.UI.Color.FromArgb(255, 0, 0, 0) : Windows.UI.Color.FromArgb(255, 255, 255, 255);
-            var hover = light ? Windows.UI.Color.FromArgb(25, 0, 0, 0) : Windows.UI.Color.FromArgb(25, 255, 255, 255);
-            var none = Windows.UI.Color.FromArgb(0, 0, 0, 0);
-            var tb = AppWindow.TitleBar;
-            tb.ButtonBackgroundColor = none;
-            tb.ButtonInactiveBackgroundColor = none;
-            tb.ButtonForegroundColor = fg;
-            tb.ButtonHoverForegroundColor = fg;
-            tb.ButtonHoverBackgroundColor = hover;
-            tb.ButtonInactiveForegroundColor = Windows.UI.Color.FromArgb(255, 128, 128, 128);
-        }
-        catch { /* cosmetic only */ }
-    }
+    private void UpdateCaptionColors() => WindowChrome.ApplyCaptionColors(AppWindow, RootGrid.ActualTheme);
 
     // ───────── the update flow ─────────
 

@@ -2,7 +2,7 @@ using Microsoft.UI.Xaml;
 
 namespace ASD;
 
-/// <param name="Group">"main" = top navigation, "more" = listed on the More page, "system" = internal.</param>
+/// <param name="Group">"main" = own item in the navigation bar (Home), "more" = listed in the Toolbox, "system" = internal.</param>
 public sealed record ToolInfo(
     string Tag, string Title, string Description, string Glyph,
     string Group, string Keywords, Func<UIElement> Create)
@@ -14,24 +14,28 @@ public static class ToolRegistry
 {
     public static readonly IReadOnlyList<ToolInfo> All = new List<ToolInfo>
     {
-        // ── Top navigation (7 tools + "More" = 8 items) ──
-        new("ico", "Image → ICO", "PNG, JPG, SVG … to a multi-size icon.ico", "\uE91B", "main",
-            "image icon ico png jpg jpeg svg bmp gif tiff webp convert favicon", () => new IcoPage()),
-        new("encode", "Encode / Decode", "Base64, URL, Hex, ROT13", "\uE8C8", "main",
-            "base64 url hex rot13 escape unescape", () => new EncodePage()),
-        new("crypto", "Encrypt / Decrypt", "AES-256 with a password", "\uE72E", "main",
-            "aes encrypt decrypt password cipher", () => new CryptoPage()),
-        new("hash", "Hash / HMAC", "MD5, SHA-1/256/384/512, HMAC, files", "\uE73E", "main",
-            "md5 sha sha256 sha512 hmac checksum file", () => new HashPage()),
-        new("json", "JSON Toolkit", "Format, validate, JSONPath, YAML, CSV", "\uE943", "main",
-            "json format minify validate jsonpath yaml csv sort", () => new JsonPage()),
-        new("jwt", "JWT Decoder", "Decode, verify and sign tokens", "\uE192", "main",
-            "jwt token bearer decode verify hs256 rs256 claims", () => new JwtPage()),
-        new("regex", "Regex Tester", "Live matches, groups, replace, explain", "\uE721", "main",
-            "regex regexp pattern match replace", () => new RegexPage()),
-        new("more", "More", "All other tools", "\uE712", "system", "", () => new MorePage()),
+        // ── Home (own navigation item) ──
+        new("home", "Home", "Favorites and quick access", "\uE80F", "main",
+            "home start welcome favorites", () => new HomePage()),
 
-        // ── Listed on the "More" page ──
+        // ── Toolbox: every tool ──
+        new("ico", "Image → ICO", "PNG, JPG, SVG … to a multi-size icon.ico", "\uE91B", "more",
+            "image icon ico png jpg jpeg svg bmp gif tiff webp convert favicon", () => new IcoPage()),
+        new("encode", "Encode / Decode", "Base64, URL, Hex, ROT13", "\uE8C8", "more",
+            "base64 url hex rot13 escape unescape", () => new EncodePage()),
+        new("crypto", "Encrypt / Decrypt", "AES-256 with a password", "\uE72E", "more",
+            "aes encrypt decrypt password cipher", () => new CryptoPage()),
+        new("hash", "Hash / HMAC", "MD5, SHA-1/256/384/512, HMAC, files", "\uE73E", "more",
+            "md5 sha sha256 sha512 hmac checksum file", () => new HashPage()),
+        new("json", "JSON Toolkit", "Format, validate, JSONPath, YAML, CSV", "\uE943", "more",
+            "json format minify validate jsonpath yaml csv sort", () => new JsonPage()),
+        new("jwt", "JWT Decoder", "Decode, verify and sign tokens", "\uE192", "more",
+            "jwt token bearer decode verify hs256 rs256 claims", () => new JwtPage()),
+        new("regex", "Regex Tester", "Live matches, groups, replace, explain", "\uE721", "more",
+            "regex regexp pattern match replace", () => new RegexPage()),
+        new("more", "Toolbox", "All tools", "\uEC7A", "system", "toolbox tools all", () => new MorePage()),
+
+        // ── Also in the Toolbox ──
         new("diff", "Diff Checker", "Compare two texts or JSON files", "\uE8AB", "more",
             "diff compare difference text json", () => new DiffPage()),
         new("track", "Process Tracker", "Follow an app from launch to exit: CPU, memory, children", "\uE9D9", "more",

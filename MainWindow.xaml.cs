@@ -99,7 +99,7 @@ public sealed partial class MainWindow : Window
     {
         RootNav.IsPaneOpen = false;
         UpdateCaptionColors();
-        OpenTool("ico");
+        OpenTool("home");
         CursorHelper.ApplyHandCursorToNavItems(RootNav);
         _ = CheckForUpdateOnStartupAsync();
     }

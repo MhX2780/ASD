@@ -9,8 +9,8 @@ public sealed class MorePage : ToolPage
 {
     private readonly StackPanel _host = new() { Spacing = 10 };
 
-    public MorePage() : base("more", "More tools",
-        "Star a tool to pin it to the top of this page. Tip: press Ctrl+K to jump to any tool.")
+    public MorePage() : base("more", "Toolbox",
+        "All your tools in one place. Star a tool to pin it to the top and to Home. Tip: press Ctrl+K to jump to any tool.")
     {
         Body.Children.Add(_host);
         Rebuild();

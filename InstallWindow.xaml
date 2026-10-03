@@ -1,0 +1,46 @@
+<Window
+    x:Class="ASD.InstallWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Install ASD">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="RootGrid" Background="Transparent">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>   <!-- TitleBar -->
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TitleBar x:Name="AppTitleBar" Grid.Row="0" Title="Install ASD" Background="Transparent"
+                  IsBackButtonVisible="False" IsPaneToggleButtonVisible="False"/>
+
+        <StackPanel Grid.Row="1" Margin="36,0,36,24" VerticalAlignment="Center" HorizontalAlignment="Stretch" Spacing="16">
+
+            <Grid Height="112" HorizontalAlignment="Center" Width="112">
+                <ProgressRing x:Name="Ring" IsActive="False" Width="64" Height="64" Visibility="Collapsed"
+                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                <FontIcon x:Name="StatusIcon" Glyph="&#xE838;" FontSize="64"
+                          HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Grid>
+
+            <TextBlock x:Name="TitleText" Text="Install ASD" FontSize="20" FontWeight="SemiBold"
+                       HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap"/>
+
+            <TextBlock x:Name="DetailText" Opacity="0.75" TextWrapping="Wrap" TextAlignment="Center"
+                       HorizontalAlignment="Center" MaxWidth="420" IsTextSelectionEnabled="True"/>
+
+            <ProgressBar x:Name="Bar" Minimum="0" Maximum="100" Value="0" Visibility="Collapsed" MaxWidth="420"/>
+            <TextBlock x:Name="StatsText" Opacity="0.7" FontSize="12" TextAlignment="Center"
+                       HorizontalAlignment="Center" Visibility="Collapsed"/>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="8">
+                <Button x:Name="ChooseButton" Content="Choose folder…" Style="{StaticResource AccentButtonStyle}"
+                        Click="OnChooseClick"/>
+                <Button x:Name="ExitButton" Content="Exit" Click="OnExitClick"/>
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+</Window>
