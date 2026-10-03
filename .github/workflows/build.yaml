@@ -1,0 +1,195 @@
+name: Build ASD
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Pin .NET 8
+      shell: pwsh
+      run: |-
+        Set-Content -Path 'global.json' -Value '{"sdk":{"version":"8.0.400","rollForward":"latestFeature"}}'
+        dotnet --version
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Restore
+      run: dotnet restore ASD.sln
+
+    - name: Build with MSBuild
+      id: build
+      shell: pwsh
+      run: |-
+        msbuild ASD.csproj /p:Configuration=Release /p:Platform=x64 /v:detailed 2>&1 | Tee-Object -FilePath build-log.txt
+        Write-Host "BUILD EXIT CODE: $LASTEXITCODE"
+      continue-on-error: true
+
+    - name: Extract errors
+      if: steps.build.outcome == 'failure'
+      shell: pwsh
+      run: |-
+        Write-Host '=== ERRORS ==='
+        Select-String -Path build-log.txt -Pattern 'error ' | Select-Object -First 50 | ForEach-Object { Write-Host $_.Line }
+
+    - name: Publish self-contained (folder, not single-file)
+      id: publish
+      if: steps.build.outcome == 'success'
+      shell: pwsh
+      run: |-
+        dotnet publish ASD.csproj -c Release -r win-x64 `
+          --self-contained true `
+          -p:PublishSingleFile=false `
+          -p:PublishTrimmed=false `
+          -p:EnableMsixTooling=true `
+          -p:WindowsPackageType=None `
+          -p:WindowsAppSDKSelfContained=true 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\publish-log.txt"
+        $code = $LASTEXITCODE
+        Write-Host "PUBLISH EXIT CODE: $code"
+        if ($code -eq 0) {
+          echo "publish_ok=true" >> $env:GITHUB_OUTPUT
+        } else {
+          echo "publish_ok=false" >> $env:GITHUB_OUTPUT
+        }
+      continue-on-error: true
+
+    - name: Show publish errors
+      if: steps.publish.outputs.publish_ok != 'true'
+      shell: pwsh
+      run: |-
+        Write-Host "=== PUBLISH ERRORS ==="
+        if (Test-Path "$env:RUNNER_TEMP\publish-log.txt") {
+          Select-String -Path "$env:RUNNER_TEMP\publish-log.txt" -Pattern 'error ' | Select-Object -First 20 | ForEach-Object { Write-Host $_.Line }
+        }
+
+    - name: Find published EXE
+      id: findexe
+      if: steps.publish.outputs.publish_ok == 'true'
+      shell: pwsh
+      run: |-
+        $exe = Get-ChildItem -Path '.' -Recurse -Filter 'ASD.exe' -ErrorAction SilentlyContinue |
+          Where-Object { $_.FullName -like '*bin*Release*publish*' } |
+          Select-Object -First 1
+        if ($exe) {
+          echo "exe_found=true" >> $env:GITHUB_OUTPUT
+          echo "exe_dir=$($exe.DirectoryName)" >> $env:GITHUB_OUTPUT
+          echo "exe_path=$($exe.FullName)" >> $env:GITHUB_OUTPUT
+          $size = [math]::Round(($exe.Length / 1MB), 2)
+          Write-Host "PUBLISHED EXE: $($exe.FullName) ($size MB)"
+        } else {
+          echo "exe_found=false" >> $env:GITHUB_OUTPUT
+          Write-Host "Published EXE not found"
+        }
+
+    - name: Find fallback EXE (non-publish build)
+      id: findexe2
+      if: steps.findexe.outputs.exe_found != 'true' && steps.build.outcome == 'success'
+      shell: pwsh
+      run: |-
+        $exe = Get-ChildItem -Path '.' -Recurse -Filter 'ASD.exe' -ErrorAction SilentlyContinue |
+          Where-Object { $_.FullName -like '*bin*Release*' } |
+          Select-Object -First 1
+        if ($exe) {
+          echo "exe_found=true" >> $env:GITHUB_OUTPUT
+          echo "exe_dir=$($exe.DirectoryName)" >> $env:GITHUB_OUTPUT
+          echo "exe_path=$($exe.FullName)" >> $env:GITHUB_OUTPUT
+          Write-Host "FALLBACK EXE: $($exe.FullName)"
+        } else {
+          echo "exe_found=false" >> $env:GITHUB_OUTPUT
+        }
+
+    - name: Create ZIP (ASD.zip) with update.txt inside
+      id: zip
+      if: steps.findexe.outputs.exe_found == 'true' || steps.findexe2.outputs.exe_found == 'true'
+      shell: pwsh
+      run: |-
+        $dir = "${{ steps.findexe.outputs.exe_dir }}"
+        if (-not $dir) { $dir = "${{ steps.findexe2.outputs.exe_dir }}" }
+        Write-Host "ZIP SOURCE: $dir"
+        $zip = Join-Path $env:RUNNER_TEMP 'ASD.zip'
+        if (Test-Path $zip) { Remove-Item $zip -Force }
+        Compress-Archive -Path (Join-Path $dir '*') -DestinationPath $zip -CompressionLevel Optimal
+        $size = [math]::Round(((Get-Item $zip).Length / 1MB), 2)
+
+        # update.txt = commit name (message) + details.
+        # The SAME file goes (1) inside ASD.zip, next to ASD.exe, so the installed app knows which
+        # version it is, and (2) next to the zip in the release, so the app can ask GitHub which
+        # version is the latest. The app compares the two files: different = update available.
+        $subject = (git log -1 --pretty=%s).Trim()
+        $body    = (git log -1 --pretty=%b).Trim()
+        $sha     = (git rev-parse --short HEAD).Trim()
+        $date    = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'")
+        $lines = @("Commit: $subject")
+        if ($body) { $lines += ""; $lines += $body }
+        $lines += ""; $lines += "SHA: $sha"; $lines += "Date: $date"; $lines += "Size: $size MB"
+        $updatePath = Join-Path $env:RUNNER_TEMP 'update.txt'
+        Set-Content -Path $updatePath -Value $lines -Encoding utf8
+        Get-Content $updatePath
+
+        # Add update.txt to the root of the zip (fast, no re-compression of the other files)
+        Add-Type -AssemblyName System.IO.Compression
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [System.IO.Compression.ZipFile]::Open($zip, [System.IO.Compression.ZipArchiveMode]::Update)
+        try {
+          $existing = $archive.GetEntry('update.txt')
+          if ($existing) { $existing.Delete() }
+          [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $updatePath, 'update.txt', [System.IO.Compression.CompressionLevel]::Optimal)
+        } finally { $archive.Dispose() }
+
+        # Sanity check: update.txt must really be inside the zip
+        $check = [System.IO.Compression.ZipFile]::OpenRead($zip)
+        try {
+          if (-not ($check.Entries | Where-Object { $_.FullName -eq 'update.txt' })) { throw 'update.txt is missing from ASD.zip' }
+          if (-not ($check.Entries | Where-Object { $_.FullName -eq 'ASD.exe' })) { throw 'ASD.exe is missing from the root of ASD.zip' }
+        } finally { $check.Dispose() }
+
+        Write-Host "CREATED: ASD.zip ($size MB) containing update.txt"
+        echo "zip_path=$zip" >> $env:GITHUB_OUTPUT
+        echo "zip_size=$size" >> $env:GITHUB_OUTPUT
+        echo "update_path=$updatePath" >> $env:GITHUB_OUTPUT
+
+    - name: Upload ASD.zip as artifact
+      if: steps.zip.outcome == 'success'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ASD
+        path: ${{ steps.zip.outputs.zip_path }}
+
+    - name: Update single release (tag "latest") with ASD.zip + update.txt
+      if: steps.zip.outcome == 'success'
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |-
+        $tag = "latest"
+        $zipPath = "${{ steps.zip.outputs.zip_path }}"
+        $updatePath = "${{ steps.zip.outputs.update_path }}"
+        $subject = (git log -1 --pretty=%s).Trim()
+
+        # Keep ONE release/tag: delete the old one, then recreate it
+        gh release delete $tag --cleanup-tag --yes 2>$null
+        $global:LASTEXITCODE = 0
+
+        gh release create $tag $zipPath $updatePath `
+          --target $env:GITHUB_SHA `
+          --title "ASD - $subject" `
+          --notes-file $updatePath
+
+    - name: Upload logs on failure
+      if: steps.build.outcome == 'failure' || steps.publish.outputs.publish_ok != 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-log
+        path: |
+          build-log.txt
+          ${{ runner.temp }}/publish-log.txt
