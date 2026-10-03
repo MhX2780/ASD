@@ -22,6 +22,7 @@ public sealed partial class InstallWindow : Window
 
     private readonly CancellationTokenSource _cts = new();
     private bool _busy;
+    private TaskbarProgress? _taskbar;   // progress bar on the app's taskbar button
     private Brush? _systemBrush;   // the system accent color (set in XAML), used by every non-status icon
 
     public InstallWindow()
@@ -53,9 +54,14 @@ public sealed partial class InstallWindow : Window
         {
             CursorHelper.ApplyPointer(RootGrid);
             CursorHelper.ApplyHandCursorToButtons(RootGrid);
+            _taskbar = new TaskbarProgress(WinRT.Interop.WindowNative.GetWindowHandle(this));
         };
 
-        Closed += (_, _) => _cts.Cancel();
+        Closed += (_, _) =>
+        {
+            _cts.Cancel();
+            _taskbar?.Clear();
+        };
 
         Show(Icon.Folder, "Install ASD",
             "This copy of ASD is running from a CD-R / read-only disc. Choose a folder: ASD will be copied there and started from the new location.",
@@ -271,6 +277,7 @@ public sealed partial class InstallWindow : Window
     {
         Bar.IsIndeterminate = false;
         Bar.Value = p.Total > 0 ? p.Done * 100.0 / p.Total : 0;
+        _taskbar?.Value(Bar.Value);
         StatsText.Text = $"{p.Done / 1048576.0:0.0} MB / {p.Total / 1048576.0:0.0} MB  ·  {Bar.Value:0}%";
         StatsText.Visibility = Visibility.Visible;
     }
@@ -315,6 +322,12 @@ public sealed partial class InstallWindow : Window
         ChooseButton.Content = chooseText;
         ChooseButton.Visibility = choose ? Visibility.Visible : Visibility.Collapsed;
         ExitButton.Visibility = exit ? Visibility.Visible : Visibility.Collapsed;
+
+        // Taskbar: error = red, unknown length = indeterminate, a known percentage comes from OnCopyProgress
+        if (icon == Icon.Error) _taskbar?.Error();
+        else if (icon == Icon.Ring || (bar && barIndeterminate)) _taskbar?.Indeterminate();
+        else if (!bar) _taskbar?.Clear();
+
         CursorHelper.ApplyHandCursorToButtons(RootGrid);
     }
 }

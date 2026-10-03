@@ -17,6 +17,7 @@ public sealed partial class UpdateWindow : Window
     private readonly CancellationTokenSource _cts = new();
     private bool _running;
     private bool _installing;
+    private TaskbarProgress? _taskbar;   // progress bar on the app's taskbar button
     private Brush? _systemBrush;   // the system accent color (set in XAML), used by every non-status icon
 
     private enum Visual { Ring, Logo, Success, Error }
@@ -47,6 +48,7 @@ public sealed partial class UpdateWindow : Window
         Closed += (_, _) =>
         {
             _cts.Cancel();
+            _taskbar?.Clear();
             _instance = null;
         };
         RootGrid.Loaded += async (_, _) =>
@@ -54,6 +56,11 @@ public sealed partial class UpdateWindow : Window
             // Same cursors as the main window (pointer + hand on buttons), if the cursor files exist
             CursorHelper.ApplyPointer(RootGrid);
             CursorHelper.ApplyHandCursorToButtons(RootGrid);
+
+            // This window is owned by the main window and has no taskbar button of its own:
+            // the progress goes on the main window's button (the app's icon in the taskbar).
+            var owner = App.MainWindow ?? this;
+            _taskbar = new TaskbarProgress(WinRT.Interop.WindowNative.GetWindowHandle(owner));
             await RunAsync();
         };
     }
@@ -176,6 +183,7 @@ public sealed partial class UpdateWindow : Window
 
         Bar.IsIndeterminate = p.Indeterminate;
         if (!p.Indeterminate) Bar.Value = p.Percent;
+        if (p.Indeterminate) _taskbar?.Indeterminate(); else _taskbar?.Value(p.Percent);
 
         if (p.Stage == "extract")
         {
@@ -237,6 +245,12 @@ public sealed partial class UpdateWindow : Window
 
         RetryButton.Visibility = retry ? Visibility.Visible : Visibility.Collapsed;
         CloseButton.Visibility = close ? Visibility.Visible : Visibility.Collapsed;
+
+        // Taskbar: error = red, unknown length = indeterminate, a known percentage comes from OnProgress
+        if (visual == Visual.Error) _taskbar?.Error();
+        else if (visual == Visual.Ring || (bar && barIndeterminate)) _taskbar?.Indeterminate();
+        else if (!bar) _taskbar?.Clear();
+
         CursorHelper.ApplyHandCursorToButtons(RootGrid);
     }
 
