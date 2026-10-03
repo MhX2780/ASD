@@ -106,14 +106,16 @@ public static class CursorHelper
     }
 
     /// <summary>
-    /// Applies the hand cursor to every Button, CheckBox and ToggleSwitch found in the visual
+    /// Applies the hand cursor to every Button, ToggleButton, RadioButton, CheckBox, ToggleSwitch and Slider found in the visual
     /// tree under <paramref name="root"/>. Call this when the visual tree is built (Loaded).
     /// </summary>
     public static void ApplyHandCursorToButtons(DependencyObject root)
     {
         foreach (var button in FindDescendants<Button>(root)) ApplyHand(button);
-        foreach (var box in FindDescendants<CheckBox>(root)) ApplyHand(box);
+        // ToggleButton also covers CheckBox and RadioButton (they derive from it)
+        foreach (var toggle in FindDescendants<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(root)) ApplyHand(toggle);
         foreach (var sw in FindDescendants<ToggleSwitch>(root)) ApplyHand(sw);
+        foreach (var slider in FindDescendants<Slider>(root)) ApplyHand(slider);
     }
 
     /// <summary>

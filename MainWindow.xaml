@@ -55,10 +55,13 @@
         CompactModeThresholdWidth="0"
         ExpandedModeThresholdWidth="10000">
 
-        <!-- Top navigation: Home + Toolbox (every tool lives in the Toolbox) -->
+        <!-- Top navigation: Home + Video Player + Toolbox (every tool lives in the Toolbox) -->
         <NavigationView.MenuItems>
             <NavigationViewItem Content="Home" Tag="home" ToolTipService.ToolTip="Home">
                 <NavigationViewItem.Icon><FontIcon Glyph="&#xE80F;" FontSize="16" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Video Player" Tag="video" ToolTipService.ToolTip="Video Player: MP4, or MP4 + MP3, from a file or link">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE714;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
             <NavigationViewItem Content="Toolbox" Tag="more" ToolTipService.ToolTip="All tools: Image → ICO, Encode / Decode, Encrypt / Decrypt, Hash, JSON, JWT, Regex, Diff, Process Tracker, Image Converter, Timestamp, Generators, Cron, Converters, URL, Formatters, cURL, HTTP Track, HTTP Download, Text Tools">
                 <NavigationViewItem.Icon><FontIcon Glyph="&#xEC7A;" FontSize="16" /></NavigationViewItem.Icon>

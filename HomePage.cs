@@ -12,6 +12,22 @@ public sealed class HomePage : ToolPage
     {
         Body.Children.Add(Btn("Open Toolbox", () => (App.MainWindow as MainWindow)?.OpenTool("more"), accent: true));
 
+        // Tools with their own navigation item (e.g. Video Player) get a card on Home too
+        var quick = ToolRegistry.All.Where(t => t.Group == "main" && t.Tag != "home").ToList();
+        if (quick.Count > 0)
+        {
+            Body.Children.Add(Label("Quick access"));
+            Body.Children.Add(new ItemsRepeater
+            {
+                ItemsSource = quick.Select(Card).ToList(),
+                Layout = new UniformGridLayout
+                {
+                    MinItemWidth = 280, MinItemHeight = 118, MinRowSpacing = 6, MinColumnSpacing = 6,
+                    ItemsStretch = UniformGridLayoutItemsStretch.Fill,
+                },
+            });
+        }
+
         var favs = ToolRegistry.Favorites();
         var tools = ToolRegistry.All.Where(t => t.Group == "more" && favs.Contains(t.Tag)).ToList();
 

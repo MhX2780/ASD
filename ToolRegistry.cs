@@ -18,6 +18,10 @@ public static class ToolRegistry
         new("home", "Home", "Favorites and quick access", "\uE80F", "main",
             "home start welcome favorites", () => new HomePage()),
 
+        // ── Video Player (own navigation item, not in the Toolbox) ──
+        new("video", "Video Player", "Play MP4, or MP4 + separate MP3, from a file or link", "\uE714", "main",
+            "video player play mp4 mp3 movie media stream audio quality", () => new VideoPlayerPage()),
+
         // ── Toolbox: every tool ──
         new("ico", "Image → ICO", "PNG, JPG, SVG … to a multi-size icon.ico", "\uE91B", "more",
             "image icon ico png jpg jpeg svg bmp gif tiff webp convert favicon", () => new IcoPage()),
