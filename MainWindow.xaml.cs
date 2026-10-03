@@ -101,12 +101,14 @@ public sealed partial class MainWindow : Window
         UpdateCaptionColors();
         OpenTool("ico");
         CursorHelper.ApplyHandCursorToNavItems(RootNav);
+        _ = CheckForUpdateOnStartupAsync();
     }
 
     private void RootNav_ItemInvoked(NavigationView sender, NavigationViewItemInvokedEventArgs args)
     {
         if (args.InvokedItemContainer is not NavigationViewItem { Tag: string tag }) return;
         if (tag == "search") { FocusSearch(); return; }
+        if (tag == "updates") { UpdateWindow.ShowWindow(); return; }   // opens its own window, no page
         OpenTool(tag);
     }
 
@@ -217,5 +219,59 @@ public sealed partial class MainWindow : Window
     {
         ClipBar.IsOpen = false;
         if (_clipTag != null) OpenTool(_clipTag, _clipText);
+    }
+
+    // ───────── updates ─────────
+    private bool _updatePrompted;
+
+    /// <summary>
+    /// On every start: ask GitHub if a newer version exists. If so, put a dot on the "Updates"
+    /// button and show a dialog (Update now / Update later). Silent when offline.
+    /// Builds without an update.txt (run from Visual Studio) are never prompted.
+    /// </summary>
+    private async Task CheckForUpdateOnStartupAsync()
+    {
+        try
+        {
+            if (_updatePrompted || UpdateService.ReadLocal() == null) return;
+
+            var check = await UpdateService.CheckAsync(CancellationToken.None);
+            if (!check.Available) return;
+
+            _updatePrompted = true;
+            UpdatesBadge.Visibility = Visibility.Visible;
+
+            var dialog = new ContentDialog
+            {
+                XamlRoot = RootNav.XamlRoot,
+                RequestedTheme = RootGrid.ActualTheme,
+                Title = "Update available!",
+                Content = new StackPanel
+                {
+                    Spacing = 12,
+                    Children =
+                    {
+                        new TextBlock { Text = "A new version of ASD is ready to install.", TextWrapping = TextWrapping.Wrap },
+                        new TextBlock
+                        {
+                            Text = UpdateService.Describe(check.RemoteText),
+                            Opacity = 0.7,
+                            TextWrapping = TextWrapping.Wrap,
+                            IsTextSelectionEnabled = true,
+                        },
+                    },
+                },
+                PrimaryButtonText = "Update now",          // accent (blue) button
+                CloseButtonText = "Update later",          // normal button
+                DefaultButton = ContentDialogButton.Primary,
+            };
+
+            if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+                UpdateWindow.ShowWindow();
+        }
+        catch
+        {
+            // offline, GitHub unreachable, another dialog already open ... never bother the user at startup
+        }
     }
 }

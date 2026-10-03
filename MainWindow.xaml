@@ -83,6 +83,12 @@
             <NavigationViewItem Content="Search (Ctrl+K)" Tag="search" SelectsOnInvoked="False" ToolTipService.ToolTip="Jump to any tool (Ctrl+K)">
                 <NavigationViewItem.Icon><FontIcon Glyph="&#xE721;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
+            <NavigationViewItem x:Name="UpdatesNavItem" Content="Updates" Tag="updates" SelectsOnInvoked="False" ToolTipService.ToolTip="Check for updates">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE777;" FontSize="16" /></NavigationViewItem.Icon>
+                <NavigationViewItem.InfoBadge>
+                    <InfoBadge x:Name="UpdatesBadge" Style="{StaticResource AttentionDotInfoBadgeStyle}" Visibility="Collapsed" />
+                </NavigationViewItem.InfoBadge>
+            </NavigationViewItem>
             <NavigationViewItem Content="Settings" Tag="settings" ToolTipService.ToolTip="Settings">
                 <NavigationViewItem.Icon><FontIcon Glyph="&#xE713;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
