@@ -1,7 +1,7 @@
 <#
   record-demo.ps1
-  Records the desktop to an MP4 (ffmpeg + gdigrab) while launching ASD.exe and clicking through
-  its buttons with REAL mouse clicks (so the cursor and the clicks are visible in the video).
+  Records the desktop to an MP4 (ffmpeg + gdigrab) while launching ASD.exe and clicking
+  ONLY through the Keys Store page (open it, "Add key", Security) with REAL mouse clicks (so the cursor and the clicks are visible in the video).
   Elements are located with Windows UI Automation (by their visible text), never by fixed pixels.
 
   Usage (from the workflow):
@@ -311,50 +311,22 @@ try {
     Start-Sleep -Seconds 4          # splash (~1.4 s) + first render
     Move-Mouse 400 300 10
 
-    # 1) pane slide animation: open, close, open again (stays open so the labels are visible)
-    $toggle = Find-PaneToggle
-    if ($toggle) {
-        Click-Toggle $toggle 1500    # open
-        Click-Toggle $toggle 1500    # close
-        Click-Toggle $toggle 1800    # open
-    } else { Log 'pane toggle button not found (see the title-bar button list above)' }
+    # Keys Store only: open it from the navigation, look around, press "Add key" and look at the dialog.
+    # the pane may start closed (its items are then not on screen): open it with the hamburger button first
+    if (-not (Find-Element 'Keys Store')) {
+        $toggle = Find-PaneToggle
+        if ($toggle) { Click-Toggle $toggle 1500 } else { Log 'pane toggle button not found (see the title-bar button list above)' }
+    }
+    [void](Click-Named 'Keys Store' 2500)
 
-    # 2) main navigation
-    [void](Click-Named 'Home' 1500)
-    [void](Click-Named 'Video Player' 2200)
-
-    # 3) Toolbox: open a few tools and come back each time
-    [void](Click-Named 'Toolbox' 1800)
-    foreach ($tool in 'Encode / Decode', 'Hash / HMAC', 'JSON Toolkit', 'Regex Tester') {
-        if (Click-Named $tool 2200) {
-            [void](Click-Named 'Toolbox' 1500)
-        }
+    # "Add key": on a fresh machine this opens the "Create your Keys Store" dialog (nothing is typed or saved)
+    if (Click-Named 'Add key' 3000) {
+        [void](Click-Named 'Cancel' 1500)          # close the dialog again
     }
 
-    # 4) Generators: scroll the Toolbox if needed, then press "Generate" a few times
-    if (Click-Named 'Generators' 1800 -scrollTries 3) {
-        1..3 | ForEach-Object { [void](Click-Named 'Generate' 1400) }
-        [void](Click-Named 'Toolbox' 1200)
-    }
+    # look at the Security section at the bottom of the page
+    [void](Click-Named 'Security' 2500 -scrollTries 3)
 
-    # 5) Settings: switch theme Dark -> Light -> Follow Windows
-    [void](Click-Named 'Settings' 1500)
-    [void](Click-Named 'Dark' 2000)
-    [void](Click-Named 'Follow Windows' 2000)          # = the runner's Windows theme
-    $endName = switch ($AppTheme) { 'light' { 'Light' } 'dark' { 'Dark' } default { 'Follow Windows' } }
-    [void](Click-Named $endName 1500)                  # finish on the theme the video started with
-
-    # 6) Updates: opens its own window, wait for the result, then close that window
-    if (Click-Named 'Updates' 1000) {
-        $result = Wait-AnyName @('ASD is up to date', 'Update Failed', 'Update Failed - CD/R or directory is not writable') 40
-        Log "update window result: $result"
-        Start-Sleep -Milliseconds 2500                    # let the result be seen
-        [void](Click-Named 'id:CloseButton' 1200)         # the XAML "Close" button (not the title-bar X)
-    }
-
-    # 7) back to Home for the last frame
-    [void](Click-Named 'Home' 2000)
-    if ($toggle) { Click-Toggle $toggle 1800 }   # close the pane once more
     Log 'scenario finished'
 }
 catch {
