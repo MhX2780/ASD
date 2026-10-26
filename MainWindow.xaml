@@ -1,0 +1,107 @@
+<Window
+    x:Class="ASD.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:ASD"
+    Title="ASD">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="RootGrid" Background="Transparent">
+    <Grid.RowDefinitions>
+        <RowDefinition Height="Auto" />   <!-- TitleBar -->
+        <RowDefinition Height="*" />      <!-- NavigationView -->
+    </Grid.RowDefinitions>
+
+    <TitleBar
+        x:Name="AppTitleBar"
+        Grid.Row="0"
+        Background="Transparent"
+        Title="ASD"
+        IsBackButtonVisible="False"
+        IsPaneToggleButtonVisible="True"
+        BackRequested="TitleBar_BackRequested"
+        PaneToggleRequested="TitleBar_PaneToggleRequested">
+        <AutoSuggestBox
+            x:Name="SearchBox"
+            PlaceholderText="Search tools  (Ctrl+K)"
+            QueryIcon="Find"
+            MinWidth="420"
+            MaxWidth="760"
+            HorizontalAlignment="Stretch"
+            VerticalAlignment="Center"
+            TextChanged="SearchBox_TextChanged"
+            GotFocus="SearchBox_GotFocus"
+            QuerySubmitted="SearchBox_QuerySubmitted" />
+    </TitleBar>
+
+    <NavigationView
+        x:Name="RootNav"
+        Grid.Row="1"
+        IsBackButtonVisible="Collapsed"
+        IsSettingsVisible="False"
+        IsPaneOpen="False"
+        PaneDisplayMode="Left"
+        ItemInvoked="RootNav_ItemInvoked"
+        Loaded="RootNav_Loaded"
+        OpenPaneLength="260"
+        CompactPaneLength="48"
+        Background="Transparent"
+        IsPaneToggleButtonVisible="False"
+        IsTitleBarAutoPaddingEnabled="False"
+        AlwaysShowHeader="False"
+        CompactModeThresholdWidth="0"
+        ExpandedModeThresholdWidth="10000">
+
+        <!-- Top navigation: Home + Video Player + Toolbox (every tool lives in the Toolbox) -->
+        <NavigationView.MenuItems>
+            <NavigationViewItem Content="Home" Tag="home" ToolTipService.ToolTip="Home">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE80F;" FontSize="16" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Keys Store" Tag="keys" ToolTipService.ToolTip="Keys Store: encrypted vault for your API keys">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE72E;" FontSize="16" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Video Player" Tag="video" ToolTipService.ToolTip="Video Player: MP4, or MP4 + MP3, from a file or link">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE714;" FontSize="16" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Toolbox" Tag="more" ToolTipService.ToolTip="All tools: Image → ICO, Encode / Decode, Encrypt / Decrypt, Hash, JSON, JWT, Regex, Diff, Process Tracker, Image Converter, Timestamp, Generators, Cron, Converters, URL, Formatters, cURL, HTTP Track, HTTP Download, Text Tools">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xEC7A;" FontSize="16" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+        </NavigationView.MenuItems>
+
+        <NavigationView.FooterMenuItems>
+            <NavigationViewItem Content="Search (Ctrl+K)" Tag="search" SelectsOnInvoked="False" ToolTipService.ToolTip="Jump to any tool (Ctrl+K)">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE721;" FontSize="16" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem x:Name="UpdatesNavItem" Content="Updates" Tag="updates" SelectsOnInvoked="False" ToolTipService.ToolTip="Check for updates">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE777;" FontSize="16" /></NavigationViewItem.Icon>
+                <NavigationViewItem.InfoBadge>
+                    <InfoBadge x:Name="UpdatesBadge" Style="{StaticResource AttentionDotInfoBadgeStyle}" Visibility="Collapsed" />
+                </NavigationViewItem.InfoBadge>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Settings" Tag="settings" ToolTipService.ToolTip="Settings">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE713;" FontSize="16" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+        </NavigationView.FooterMenuItems>
+
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <InfoBar x:Name="ClipBar" Grid.Row="0" IsOpen="False" Severity="Informational" Margin="12,8,12,0"/>
+            <ContentControl x:Name="ContentHost" Grid.Row="1"
+                            HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" IsTabStop="False"/>
+        </Grid>
+    </NavigationView>
+
+        <!-- Splash: only the app icon, then the whole overlay fades out and the app shows (see PlaySplashAsync) -->
+        <Grid x:Name="SplashOverlay" Grid.Row="0" Grid.RowSpan="2"
+              Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
+            <Image x:Name="SplashIcon" Width="128" Height="128" Opacity="0"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Grid>
+    </Grid>
+</Window>

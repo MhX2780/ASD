@@ -1,0 +1,40 @@
+<Page
+    x:Class="ASD.TextToolsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Loaded="Page_Loaded">
+
+    <Grid Padding="32" RowSpacing="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Text Tools" FontSize="26" FontWeight="Bold"/>
+
+        <TextBox x:Name="InputBox" Grid.Row="1" PlaceholderText="Paste text or JSON here..."
+                 AcceptsReturn="True" TextWrapping="Wrap"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                 TextChanged="OnInputChanged"/>
+
+        <TextBlock x:Name="CountsText" Grid.Row="2" Opacity="0.7"/>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="10" >
+            <Button Content="UPPERCASE" Click="OnUpperClick"/>
+            <Button Content="lowercase" Click="OnLowerClick"/>
+            <Button Content="Title Case" Click="OnTitleClick"/>
+            <Button Content="Trim Lines" Click="OnTrimLinesClick"/>
+            <Button Content="Remove Duplicate Lines" Click="OnDedupClick"/>
+            <Button Content="Format JSON" Click="OnFormatJsonClick" Style="{StaticResource AccentButtonStyle}"/>
+            <Button Content="Copy Result" Click="OnCopyClick"/>
+            <Button Content="Clear" Click="OnClearClick"/>
+        </StackPanel>
+
+        <TextBox x:Name="OutputBox" Grid.Row="4" IsReadOnly="True"
+                 AcceptsReturn="True" TextWrapping="Wrap" FontFamily="Consolas"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+    </Grid>
+</Page>
