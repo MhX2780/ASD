@@ -135,6 +135,28 @@ internal static class UpdateService
 
         await DownloadAsync(progress, ct);
         await Task.Run(() => Extract(progress, ct), ct);
+        await StageInfoAsync(ct);
+    }
+
+    /// <summary>
+    /// update.txt is published next to ASD.zip, not inside it. Download it into the staging folder so the
+    /// installer copies it last (it records which version is installed). Fails the update when it can't be fetched.
+    /// </summary>
+    private static async Task StageInfoAsync(CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(ConnectTimeout);
+        try
+        {
+            var text = await Http.GetStringAsync(RemoteInfoUrl, timeout.Token);
+            if (text.Length > MaxInfoBytes || !text.Contains("SHA:", StringComparison.Ordinal))
+                throw new InvalidDataException("The update information on GitHub is not valid.");
+            await File.WriteAllTextAsync(Path.Combine(StagingDir, "update.txt"), text, new UTF8Encoding(false), ct);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException("GitHub did not answer in time. Check your internet connection.");
+        }
     }
 
     private static async Task DownloadAsync(IProgress<UpdateProgress> progress, CancellationToken ct)
@@ -227,13 +249,10 @@ internal static class UpdateService
             }
         }
 
-        // The package must be complete: the app itself, and update.txt (otherwise the new version
-        // would not know its own version and would offer the same update again and again).
+        // The package must contain the app itself. (update.txt is not in the zip: StageInfoAsync adds it.)
         var exeName = Path.GetFileName(Environment.ProcessPath ?? "ASD.exe");
         if (!File.Exists(Path.Combine(StagingDir, exeName)))
             throw new InvalidDataException($"The update package is invalid ({exeName} is missing).");
-        if (!File.Exists(Path.Combine(StagingDir, "update.txt")))
-            throw new InvalidDataException("The update package is invalid (update.txt is missing).");
     }
 
     // ───────── step 3: replace the files and restart ─────────
