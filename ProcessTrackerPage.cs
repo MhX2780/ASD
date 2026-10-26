@@ -135,6 +135,7 @@ public sealed class ProcessTrackerPage : ToolPage
             var dlg = new ContentDialog
             {
                 XamlRoot = XamlRoot,
+                RequestedTheme = ActualTheme,
                 Title = "Attach to a running process",
                 PrimaryButtonText = "Track it",
                 CloseButtonText = "Cancel",

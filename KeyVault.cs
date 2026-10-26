@@ -13,6 +13,8 @@ internal sealed class KeyEntry
     public List<string> Tags { get; set; } = new();
     public string Notes { get; set; } = "";
     public bool Favorite { get; set; }
+    /// <summary>Segoe MDL2 glyph chosen for the card (one of nine).</summary>
+    public string Icon { get; set; } = "\uE72E";
     public DateTime Created { get; set; } = DateTime.Now;
     public DateTime Modified { get; set; } = DateTime.Now;
     public DateTime? Expires { get; set; }

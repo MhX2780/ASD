@@ -1,81 +1,101 @@
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Windows.ApplicationModel.DataTransfer;
 
 namespace ASD;
 
 /// <summary>
-/// Encrypted vault for API keys. Cards (name, service, tags) are visible and searchable at all times;
-/// the secret itself is only decrypted after the user proves who they are:
-///   click a card → dialog (Windows Hello / Password / Cancel) → content hides → progress ring → secret shown + Copy.
-/// Once unlocked, the vault stays open until "Lock now" or the idle timeout, and further clicks skip the dialog
-/// (unless "ask every time" is on in Security).
+/// Encrypted vault for API keys.
+///   Header : "Keys Store" on the left, [Add new key] [Search] [Security] on the right.
+///   Body   : only the key cards (an empty-state hint when there are none).
+///   Click a card → unlock dialog (Windows Hello / Password / Cancel) → content hides → progress ring →
+///   a dialog with the key's information and value: Close (main button) and Edit.
+/// Names, services and tags stay visible/searchable while locked; values are AES-256-GCM encrypted.
+/// Once unlocked the vault stays open until the idle timeout or "Lock now" (Security).
 /// </summary>
 public sealed class KeysStorePage : ToolPage
 {
     private const string AllTags = "All tags";
     private const string AllServices = "All services";
 
-    // the three mutually-exclusive views
+    private static readonly string[] Icons =
+        { "", "", "", "", "", "", "", "", "" };
+    private static readonly string[] IconNames =
+        { "Key / vault", "Cloud", "Website", "Email", "Account", "Link", "Developer", "Payments", "Settings" };
+
+    // the two mutually-exclusive views
     private readonly StackPanel _listView = new() { Spacing = 12 };
     private readonly StackPanel _busyView = new()
     {
         Spacing = 16, Visibility = Visibility.Collapsed,
         HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 70, 0, 70),
     };
-    private readonly StackPanel _revealView = new() { Spacing = 12, Visibility = Visibility.Collapsed };
-
     private readonly TextBlock _busyText = new() { HorizontalAlignment = HorizontalAlignment.Center, Opacity = 0.8 };
+
+    // search area (hidden until the Search button is pressed)
+    private readonly StackPanel _searchPanel = new() { Spacing = 8, Visibility = Visibility.Collapsed };
     private readonly TextBox _search;
     private readonly ComboBox _tagFilter = Combo(AllTags);
     private readonly ComboBox _serviceFilter = Combo(AllServices);
     private readonly ComboBox _stateFilter = Combo("All keys", "Favorites", "Expired", "Expiring in 30 days", "Has expiry", "No expiry");
     private readonly CheckBox _inValues = Check("Also search inside values (while unlocked)");
-    private readonly StackPanel _cardsHost = new() { Spacing = 8 };
     private readonly TextBlock _count = new() { Opacity = 0.7 };
-    private readonly TextBlock _lockState = new() { VerticalAlignment = VerticalAlignment.Center, FontWeight = FontWeights.SemiBold };
-    private readonly Button _lockBtn;
-    private readonly Button _helloBtn;
-    private readonly TextBlock _helloState = new() { Opacity = 0.8, TextWrapping = TextWrapping.Wrap };
+    private readonly StackPanel _cardsHost = new() { Spacing = 8 };
 
-    private readonly DispatcherTimer _revealTimer = new() { Interval = TimeSpan.FromSeconds(60) };
+    private ContentDialog? _infoDialog;
     private bool _flow;          // a dialog / auth flow is running
     private bool _suspend;       // ignore filter events while refilling the combos
     private bool _helloSupported;
     private int _copyToken;
 
-    public KeysStorePage() : base("keys", "Keys Store",
-        "Your API keys, encrypted with AES-256. Names and tags stay searchable; a value is only decrypted after Windows Hello or your master password.")
+    public KeysStorePage() : base("keys", "Keys Store", "")
     {
-        _search = Input("search", "", 0, "Search name, service, tags, notes …", persist: false, multiline: false);
-        _search.TextChanged += (_, _) => RebuildCards();
+        // ── header: title on one side, the buttons on the opposite side ──
+        var title = new TextBlock { Text = "Keys Store", FontSize = 26, FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center };
+        var add = IconBtn("", "Add new key", () => Run(AddAsync), accent: true);
+        var searchBtn = IconBtn("", "Search", ToggleSearch);
+        var gear = Btn("", () => Run(SecurityAsync));
+        gear.Content = new FontIcon { Glyph = "", FontSize = 16 };
+        AutomationProperties.SetName(gear, "Security");
+        ToolTipService.SetToolTip(gear, "Security");
 
+        var header = new Grid();
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var actions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 8,
+            HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center,
+            Children = { add, searchBtn, gear },
+        };
+        Grid.SetColumn(actions, 1);
+        header.Children.Add(title);
+        header.Children.Add(actions);
+        ((StackPanel)((ScrollViewer)Content).Content).Children[0] = header;   // replace the base class's title + subtitle block
+
+        // ── search area ──
+        _search = Input("search", "", 0, "Search name, service, tags, notes …", persist: false, multiline: false);
+        _search.TextChanged += (_, _) => { if (!_suspend) RebuildCards(); };
         foreach (var c in new[] { _tagFilter, _serviceFilter, _stateFilter })
             c.SelectionChanged += (_, _) => { if (!_suspend) RebuildCards(); };
-        _inValues.Checked += (_, _) => RebuildCards();
-        _inValues.Unchecked += (_, _) => RebuildCards();
-
-        _lockBtn = Btn("Lock now", () => KeyVault.Lock());
-        _helloBtn = Btn("Enable Windows Hello", () => Run(ToggleHelloAsync));
-
-        _revealTimer.Tick += (_, _) => { _revealTimer.Stop(); ShowList(); Status.Text = "Hidden automatically."; };
+        _inValues.Checked += (_, _) => { if (!_suspend) RebuildCards(); };
+        _inValues.Unchecked += (_, _) => { if (!_suspend) RebuildCards(); };
+        _searchPanel.Children.Add(_search);
+        _searchPanel.Children.Add(Row(_tagFilter, _serviceFilter, _stateFilter));
+        _searchPanel.Children.Add(_inValues);
+        _searchPanel.Children.Add(_count);
 
         _busyView.Children.Add(new ProgressRing { IsActive = true, Width = 56, Height = 56, HorizontalAlignment = HorizontalAlignment.Center });
         _busyView.Children.Add(_busyText);
 
-        _listView.Children.Add(Row(Btn("Add key", () => Run(AddAsync), accent: true), _lockState, _lockBtn));
-        _listView.Children.Add(_search);
-        _listView.Children.Add(Row(_tagFilter, _serviceFilter, _stateFilter));
-        _listView.Children.Add(_inValues);
-        _listView.Children.Add(_count);
+        _listView.Children.Add(_searchPanel);
         _listView.Children.Add(_cardsHost);
-        _listView.Children.Add(BuildSecurity());
-
         Body.Children.Add(_listView);
         Body.Children.Add(_busyView);
-        Body.Children.Add(_revealView);
 
         Loaded += async (_, _) =>
         {
@@ -85,121 +105,68 @@ public sealed class KeysStorePage : ToolPage
                 _helloSupported = await KeyVault.IsHelloSupportedAsync();
                 RefreshFilters();
                 RebuildCards();
-                UpdateLockUi();
             }
             catch (Exception ex) { Fail(ex); }
         };
-        Unloaded += (_, _) =>
-        {
-            KeyVault.Locked -= OnVaultLocked;
-            _revealTimer.Stop();
-            _revealView.Children.Clear();
-        };
+        Unloaded += (_, _) => KeyVault.Locked -= OnVaultLocked;
 
-        try { RefreshFilters(); RebuildCards(); UpdateLockUi(); }
+        try { RefreshFilters(); RebuildCards(); }
         catch (Exception ex) { Fail(ex); }
     }
+
+    private Button IconBtn(string glyph, string text, Action onClick, bool accent = false)
+    {
+        var b = Btn(text, onClick, accent);
+        b.Content = new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 8,
+            Children = { new FontIcon { Glyph = glyph, FontSize = 14 }, new TextBlock { Text = text } },
+        };
+        AutomationProperties.SetName(b, text);
+        return b;
+    }
+
+    /// <summary>A dialog that follows the app's theme setting (Light / Dark), not the Windows theme.</summary>
+    private ContentDialog NewDialog() => new() { XamlRoot = XamlRoot, RequestedTheme = ActualTheme };
 
     // ───────────────────────── views ─────────────────────────
     private void ShowList()
     {
-        _revealTimer.Stop();
-        _revealView.Children.Clear();       // drop any decrypted value from the UI
         _busyView.Visibility = Visibility.Collapsed;
-        _revealView.Visibility = Visibility.Collapsed;
         _listView.Visibility = Visibility.Visible;
-        UpdateLockUi();
     }
 
     private void ShowBusy(string text)
     {
-        _revealTimer.Stop();
         _busyText.Text = text;
         _listView.Visibility = Visibility.Collapsed;
-        _revealView.Visibility = Visibility.Collapsed;
         _busyView.Visibility = Visibility.Visible;
-    }
-
-    private void ShowReveal(KeyEntry e, string secret)
-    {
-        _revealView.Children.Clear();
-
-        var meta = string.Join("  ·  ", new[] { e.Service }.Concat(e.Tags).Where(s => s.Length > 0));
-        var valueBox = new TextBox
-        {
-            Text = secret, IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
-            FontFamily = new FontFamily("Consolas"), MinHeight = 90, MaxHeight = 280,
-            Header = "Value",
-        };
-        ScrollViewer.SetVerticalScrollBarVisibility(valueBox, ScrollBarVisibility.Auto);
-
-        var shown = true;
-        Button? toggle = null;
-        toggle = Btn("Hide", () =>
-        {
-            shown = !shown;
-            valueBox.Text = shown ? secret : new string('•', Math.Clamp(secret.Length, 8, 32));
-            toggle!.Content = shown ? "Hide" : "Show";
-        });
-
-        var info = new List<string>();
-        if (e.Expires is DateTime exp) info.Add($"Expires {exp:yyyy-MM-dd}");
-        info.Add($"Added {e.Created:yyyy-MM-dd HH:mm}");
-        info.Add($"Changed {e.Modified:yyyy-MM-dd HH:mm}");
-
-        _revealView.Children.Add(Row(Btn("← Back", ShowList)));
-        _revealView.Children.Add(new TextBlock { Text = e.Name, FontSize = 22, FontWeight = FontWeights.Bold, TextWrapping = TextWrapping.Wrap });
-        if (meta.Length > 0) _revealView.Children.Add(new TextBlock { Text = meta, Opacity = 0.75, TextWrapping = TextWrapping.Wrap });
-        _revealView.Children.Add(valueBox);
-        _revealView.Children.Add(Row(
-            Btn("Copy", () => CopySecret(secret), accent: true),
-            toggle,
-            Btn("Edit", () => { ShowList(); Run(() => EditAsync(e.Id)); })));
-        if (e.Notes.Length > 0)
-            _revealView.Children.Add(new TextBlock { Text = e.Notes, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true });
-        _revealView.Children.Add(new TextBlock { Text = string.Join("   ·   ", info), Opacity = 0.6, FontSize = 12 });
-        _revealView.Children.Add(new TextBlock
-        {
-            Text = "This view hides itself after 60 seconds. The clipboard is cleared 30 seconds after you copy.",
-            Opacity = 0.6, FontSize = 12, TextWrapping = TextWrapping.Wrap,
-        });
-
-        _listView.Visibility = Visibility.Collapsed;
-        _busyView.Visibility = Visibility.Collapsed;
-        _revealView.Visibility = Visibility.Visible;
-        _revealTimer.Stop();
-        _revealTimer.Start();
-        CursorHelper.ApplyHandCursorToButtons(_revealView);
-    }
-
-    private void UpdateLockUi()
-    {
-        var open = KeyVault.IsUnlocked;
-        _lockState.Text = !KeyVault.Exists ? "No vault yet" : open ? "Unlocked" : "Locked";
-        _lockState.Opacity = open ? 1 : 0.7;
-        _lockBtn.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
-        _inValues.IsEnabled = open;
-        if (!open && _inValues.IsChecked == true) _inValues.IsChecked = false;
-
-        var hello = KeyVault.HelloEnabled;
-        _helloBtn.Content = hello ? "Disable Windows Hello" : "Enable Windows Hello";
-        _helloBtn.IsEnabled = _helloSupported || hello;
-        _helloState.Text = !_helloSupported && !hello
-            ? "Windows Hello is not available on this PC (set up a PIN, fingerprint or face in Windows Settings first)."
-            : hello ? "Windows Hello can unlock the vault. Your master password always works too."
-                    : "Unlock with fingerprint, face or PIN instead of typing the master password.";
     }
 
     private void OnVaultLocked() => DispatcherQueue.TryEnqueue(() =>
     {
-        if (_revealView.Visibility == Visibility.Visible) ShowList();
-        _revealView.Children.Clear();
-        UpdateLockUi();
+        _infoDialog?.Hide();     // never leave a decrypted value on screen after locking
         RebuildCards();
         Status.Text = "Vault locked.";
     });
 
-    // ───────────────────────── list / search / filter ─────────────────────────
+    private void ToggleSearch()
+    {
+        var open = _searchPanel.Visibility != Visibility.Visible;
+        _searchPanel.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        if (open) { _search.Focus(FocusState.Programmatic); return; }
+
+        _suspend = true;                                  // closing the search clears it
+        _search.Text = "";
+        _tagFilter.SelectedIndex = 0;
+        _serviceFilter.SelectedIndex = 0;
+        _stateFilter.SelectedIndex = 0;
+        _inValues.IsChecked = false;
+        _suspend = false;
+        RebuildCards();
+    }
+
+    // ───────────────────────── cards / search / filter ─────────────────────────
     private void RefreshFilters()
     {
         var all = KeyVault.All();
@@ -234,8 +201,8 @@ public sealed class KeysStorePage : ToolPage
 
         foreach (var e in all)
         {
-            if (tag != AllTags && !e.Tags.Contains(tag, StringComparer.OrdinalIgnoreCase)) continue;
-            if (service != AllServices && !string.Equals(e.Service, service, StringComparison.OrdinalIgnoreCase)) continue;
+            if (tag.Length > 0 && tag != AllTags && !e.Tags.Contains(tag, StringComparer.OrdinalIgnoreCase)) continue;
+            if (service.Length > 0 && service != AllServices && !string.Equals(e.Service, service, StringComparison.OrdinalIgnoreCase)) continue;
 
             var days = e.Expires is DateTime x ? (x.Date - today).Days : int.MaxValue;
             var ok = state switch
@@ -264,20 +231,34 @@ public sealed class KeysStorePage : ToolPage
     {
         try
         {
+            // searching inside values only makes sense while unlocked
+            var open = KeyVault.IsUnlocked;
+            _inValues.IsEnabled = open;
+            if (!open && _inValues.IsChecked == true)
+            {
+                _suspend = true;
+                _inValues.IsChecked = false;
+                _suspend = false;
+            }
             if (_inValues.IsChecked == true) KeyVault.Touch();
+
             var all = KeyVault.All();
             var shown = Filtered(all).OrderByDescending(e => e.Favorite).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
 
             _count.Text = all.Count == 0 ? "" : $"{shown.Count} of {all.Count} keys";
             _cardsHost.Children.Clear();
+
             if (all.Count == 0)
             {
-                _cardsHost.Children.Add(new TextBlock
+                // empty state: the same icon as the navigation bar, centred, with a hint
+                _cardsHost.Children.Add(new StackPanel
                 {
-                    Text = KeyVault.Exists
-                        ? "No keys yet. Press “Add key”."
-                        : "No keys yet. Press “Add key” — you will be asked to create a master password first.",
-                    Opacity = 0.7, TextWrapping = TextWrapping.Wrap,
+                    Spacing = 14, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 90, 0, 0),
+                    Children =
+                    {
+                        new FontIcon { Glyph = "", FontSize = 72, Opacity = 0.45, HorizontalAlignment = HorizontalAlignment.Center },
+                        new TextBlock { Text = "Click Add Key above to add new key", Opacity = 0.7, HorizontalAlignment = HorizontalAlignment.Center, TextWrapping = TextWrapping.Wrap },
+                    },
                 });
             }
             else if (shown.Count == 0)
@@ -301,6 +282,8 @@ public sealed class KeysStorePage : ToolPage
         catch (Exception ex) { Fail(ex); }
     }
 
+    private static string IconOf(KeyEntry e) => string.IsNullOrEmpty(e.Icon) ? Icons[0] : e.Icon;
+
     private UIElement Card(KeyEntry e)
     {
         var meta = string.Join("  ·  ", new[] { e.Service }.Concat(e.Tags).Where(s => s.Length > 0));
@@ -311,7 +294,7 @@ public sealed class KeysStorePage : ToolPage
             Spacing = 3, Margin = new Thickness(0, 0, 58, 0), HorizontalAlignment = HorizontalAlignment.Left,
             Children =
             {
-                new FontIcon { Glyph = "", FontSize = 22, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 4) },
+                new FontIcon { Glyph = IconOf(e), FontSize = 22, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 4) },
                 new TextBlock { Text = e.Name, FontWeight = FontWeights.Bold, FontSize = 16, TextTrimming = TextTrimming.CharacterEllipsis, HorizontalAlignment = HorizontalAlignment.Left },
                 new TextBlock { Text = meta.Length > 0 ? meta : " ", Opacity = 0.7, FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, HorizontalAlignment = HorizontalAlignment.Left },
             },
@@ -332,6 +315,7 @@ public sealed class KeysStorePage : ToolPage
             HorizontalContentAlignment = HorizontalAlignment.Left, VerticalContentAlignment = VerticalAlignment.Top,
             Padding = new Thickness(14), Margin = new Thickness(4),
         };
+        AutomationProperties.SetName(main, e.Name);
         main.Click += (_, _) => Run(() => RevealAsync(e.Id));
 
         var star = SmallIconButton(e.Favorite ? "" : "", e.Favorite ? "Remove from favorites" : "Add to favorites");
@@ -362,6 +346,7 @@ public sealed class KeysStorePage : ToolPage
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             BorderThickness = new Thickness(0),
         };
+        AutomationProperties.SetName(b, tip);
         ToolTipService.SetToolTip(b, tip);
         return b;
     }
@@ -388,7 +373,7 @@ public sealed class KeysStorePage : ToolPage
         finally
         {
             _flow = false;
-            try { RefreshFilters(); RebuildCards(); UpdateLockUi(); } catch { /* page may be gone */ }
+            try { RefreshFilters(); RebuildCards(); } catch { /* page may be gone */ }
         }
     }
 
@@ -410,7 +395,76 @@ public sealed class KeysStorePage : ToolPage
         }
 
         var secret = KeyVault.Reveal(id);
-        ShowReveal(entry, secret);
+        ShowList();
+        await ShowInfoAsync(entry, secret);
+    }
+
+    /// <summary>The key's information dialog: Close is the main button, Edit the other one.</summary>
+    private async Task ShowInfoAsync(KeyEntry e, string secret)
+    {
+        var meta = string.Join("  ·  ", new[] { e.Service }.Concat(e.Tags).Where(s => s.Length > 0));
+        var valueBox = new TextBox
+        {
+            Header = "Value", Text = secret, IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
+            FontFamily = new FontFamily("Consolas"), MinHeight = 84, MaxHeight = 220,
+        };
+        ScrollViewer.SetVerticalScrollBarVisibility(valueBox, ScrollBarVisibility.Auto);
+
+        var shown = true;
+        Button? toggle = null;
+        toggle = Btn("Hide", () =>
+        {
+            shown = !shown;
+            valueBox.Text = shown ? secret : new string('•', Math.Clamp(secret.Length, 8, 32));
+            toggle!.Content = shown ? "Hide" : "Show";
+        });
+        var copy = Btn("Copy", () => { });
+        copy.Click += (_, _) => { CopySecret(secret); copy.Content = "Copied"; ResetLabel(copy, "Copy"); };
+
+        var lines = new List<string>();
+        if (e.Expires is DateTime exp) lines.Add($"Expires {exp:yyyy-MM-dd}");
+        lines.Add($"Added {e.Created:yyyy-MM-dd HH:mm}");
+        lines.Add($"Changed {e.Modified:yyyy-MM-dd HH:mm}");
+
+        var body = new StackPanel { Spacing = 10, Width = 460 };
+        if (meta.Length > 0) body.Children.Add(new TextBlock { Text = meta, Opacity = 0.75, TextWrapping = TextWrapping.Wrap });
+        body.Children.Add(valueBox);
+        body.Children.Add(Row(copy, toggle));
+        if (e.Notes.Length > 0)
+            body.Children.Add(new TextBlock { Text = e.Notes, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true });
+        body.Children.Add(new TextBlock { Text = string.Join("   ·   ", lines), Opacity = 0.6, FontSize = 12, TextWrapping = TextWrapping.Wrap });
+        body.Children.Add(new TextBlock { Text = "The clipboard is cleared 30 seconds after you copy.", Opacity = 0.6, FontSize = 12, TextWrapping = TextWrapping.Wrap });
+
+        var dlg = NewDialog();
+        dlg.Title = new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 12,
+            Children =
+            {
+                new FontIcon { Glyph = IconOf(e), FontSize = 24, VerticalAlignment = VerticalAlignment.Center },
+                new TextBlock { Text = e.Name, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 380 },
+            },
+        };
+        dlg.PrimaryButtonText = "Close";
+        dlg.SecondaryButtonText = "Edit";
+        dlg.DefaultButton = ContentDialogButton.Primary;
+        dlg.Content = new ScrollViewer { MaxHeight = 480, Content = body };
+
+        _infoDialog = dlg;
+        ContentDialogResult result;
+        try { result = await dlg.ShowAsync(); }
+        finally
+        {
+            _infoDialog = null;
+            valueBox.Text = "";
+        }
+        if (result == ContentDialogResult.Secondary) await EditAsync(e.Id);
+    }
+
+    private static async void ResetLabel(Button b, string text)
+    {
+        await Task.Delay(1500);
+        b.Content = text;
     }
 
     private async Task AddAsync()
@@ -438,15 +492,12 @@ public sealed class KeysStorePage : ToolPage
 
         if (result.Delete)
         {
-            var confirm = new ContentDialog
-            {
-                XamlRoot = XamlRoot,
-                Title = $"Delete “{existing.Name}”?",
-                Content = "The key and its encrypted value are removed from this PC. This cannot be undone.",
-                PrimaryButtonText = "Delete",
-                CloseButtonText = "Cancel",
-                DefaultButton = ContentDialogButton.Close,
-            };
+            var confirm = NewDialog();
+            confirm.Title = $"Delete “{existing.Name}”?";
+            confirm.Content = "The key and its encrypted value are removed from this PC. This cannot be undone.";
+            confirm.PrimaryButtonText = "Delete";
+            confirm.CloseButtonText = "Cancel";
+            confirm.DefaultButton = ContentDialogButton.Close;
             if (await confirm.ShowAsync() != ContentDialogResult.Primary) return;
             KeyVault.Delete(id);
             Status.Text = $"Deleted “{existing.Name}”.";
@@ -483,18 +534,41 @@ public sealed class KeysStorePage : ToolPage
         var fav = new CheckBox { Content = "Favorite", IsChecked = existing?.Favorite ?? false };
         var error = new TextBlock { Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
 
-        var dlg = new ContentDialog
+        // icon picker: one of nine
+        var selected = existing == null ? Icons[0] : IconOf(existing);
+        if (!Icons.Contains(selected)) selected = Icons[0];
+        var iconButtons = new List<ToggleButton>();
+        var iconRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        for (var i = 0; i < Icons.Length; i++)
         {
-            XamlRoot = XamlRoot,
-            Title = isNew ? "Add key" : "Edit key",
-            PrimaryButtonText = "Save",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Primary,
-            Content = new ScrollViewer
+            var glyph = Icons[i];
+            var tb = new ToggleButton
             {
-                MaxHeight = 500,
-                Content = new StackPanel { Spacing = 10, Width = 460, Children = { name, service, tags, value, notes, expires, fav, error } },
-            },
+                Content = new FontIcon { Glyph = glyph, FontSize = 18 },
+                Width = 40, Height = 40, Padding = new Thickness(0),
+                IsChecked = glyph == selected,
+            };
+            AutomationProperties.SetName(tb, IconNames[i]);
+            ToolTipService.SetToolTip(tb, IconNames[i]);
+            tb.Click += (_, _) =>
+            {
+                selected = glyph;
+                foreach (var b in iconButtons) b.IsChecked = ReferenceEquals(b, tb);
+            };
+            iconButtons.Add(tb);
+            iconRow.Children.Add(tb);
+        }
+        var iconBox = new StackPanel { Spacing = 6, Children = { new TextBlock { Text = "Icon" }, iconRow } };
+
+        var dlg = NewDialog();
+        dlg.Title = isNew ? "Add key" : "Edit key";
+        dlg.PrimaryButtonText = "Save";
+        dlg.CloseButtonText = "Cancel";
+        dlg.DefaultButton = ContentDialogButton.Primary;
+        dlg.Content = new ScrollViewer
+        {
+            MaxHeight = 520,
+            Content = new StackPanel { Spacing = 10, Width = 460, Children = { iconBox, name, service, tags, value, notes, expires, fav, error } },
         };
         if (!isNew) dlg.SecondaryButtonText = "Delete";
 
@@ -524,6 +598,7 @@ public sealed class KeysStorePage : ToolPage
         entry.Notes = notes.Text.Trim();
         entry.Favorite = fav.IsChecked == true;
         entry.Expires = expires.Date?.Date;
+        entry.Icon = selected;
         return new EditResult(entry, value.Text.Length > 0 ? value.Text : null, false);
     }
 
@@ -550,22 +625,19 @@ public sealed class KeysStorePage : ToolPage
                 Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed),
                 Visibility = error.Length > 0 ? Visibility.Visible : Visibility.Collapsed,
             };
-            var dlg = new ContentDialog
+            var dlg = NewDialog();
+            dlg.Title = title;
+            dlg.Content = new StackPanel
             {
-                XamlRoot = XamlRoot,
-                Title = title,
-                Content = new StackPanel
+                Spacing = 10,
+                Children =
                 {
-                    Spacing = 10,
-                    Children =
-                    {
-                        new TextBlock { Text = helloReady ? "Use Windows Hello, or type your master password." : "Type your master password.", TextWrapping = TextWrapping.Wrap },
-                        pw, err,
-                    },
+                    new TextBlock { Text = helloReady ? "Use Windows Hello, or type your master password." : "Type your master password.", TextWrapping = TextWrapping.Wrap },
+                    pw, err,
                 },
-                SecondaryButtonText = "Password",
-                CloseButtonText = "Cancel",
             };
+            dlg.SecondaryButtonText = "Password";
+            dlg.CloseButtonText = "Cancel";
             if (helloReady)
             {
                 dlg.PrimaryButtonText = "Windows Hello";
@@ -608,25 +680,22 @@ public sealed class KeysStorePage : ToolPage
         var p1 = new PasswordBox { Header = "Master password (at least 8 characters)", MinWidth = 340 };
         var p2 = new PasswordBox { Header = "Repeat the password", MinWidth = 340 };
         var err = new TextBlock { Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
-        var dlg = new ContentDialog
+        var dlg = NewDialog();
+        dlg.Title = "Create your Keys Store";
+        dlg.PrimaryButtonText = "Create";
+        dlg.CloseButtonText = "Cancel";
+        dlg.DefaultButton = ContentDialogButton.Primary;
+        dlg.Content = new StackPanel
         {
-            XamlRoot = XamlRoot,
-            Title = "Create your Keys Store",
-            PrimaryButtonText = "Create",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Primary,
-            Content = new StackPanel
+            Spacing = 10,
+            Children =
             {
-                Spacing = 10,
-                Children =
+                new TextBlock
                 {
-                    new TextBlock
-                    {
-                        Text = "This password encrypts every key. It cannot be recovered — if you forget it, the keys are gone.",
-                        TextWrapping = TextWrapping.Wrap,
-                    },
-                    p1, p2, err,
+                    Text = "This password protects all your other keys. It cannot be recovered — if you forget it, the keys are gone.",
+                    TextWrapping = TextWrapping.Wrap,
                 },
+                p1, p2, err,
             },
         };
         dlg.PrimaryButtonClick += (_, a) =>
@@ -648,9 +717,36 @@ public sealed class KeysStorePage : ToolPage
         return true;
     }
 
-    // ───────────────────────── security settings ─────────────────────────
-    private UIElement BuildSecurity()
+    // ───────────────────────── security dialog (gear button) ─────────────────────────
+    private async Task SecurityAsync()
     {
+        Status.Text = "";
+        var exists = KeyVault.Exists;
+        var open = KeyVault.IsUnlocked;
+        var hello = KeyVault.HelloEnabled;
+
+        Func<Task>? next = null;       // a follow-up flow that needs its own dialog, run after this one closes
+        var dlg = NewDialog();
+
+        var state = new TextBlock
+        {
+            FontWeight = FontWeights.SemiBold,
+            Text = !exists ? "No vault yet — add your first key to create one." : open ? "The vault is unlocked." : "The vault is locked.",
+        };
+        var lockBtn = Btn("Lock now", () => { KeyVault.Lock(); dlg.Hide(); });
+        lockBtn.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+
+        var helloInfo = new TextBlock { Opacity = 0.8, TextWrapping = TextWrapping.Wrap };
+        helloInfo.Text = !_helloSupported && !hello
+            ? "Windows Hello is not available on this PC (set up a PIN, fingerprint or face in Windows Settings first)."
+            : hello ? "Windows Hello can unlock the vault. Your master password always works too."
+                    : "Unlock with fingerprint, face or PIN instead of typing the master password.";
+        var helloBtn = Btn(hello ? "Disable Windows Hello" : "Enable Windows Hello", () => { next = ToggleHelloAsync; dlg.Hide(); });
+        helloBtn.IsEnabled = exists && (_helloSupported || hello);
+
+        var changeBtn = Btn("Change master password", () => { next = ChangePasswordAsync; dlg.Hide(); });
+        changeBtn.IsEnabled = exists;
+
         var minutes = new[] { 1, 5, 15, 30, 60 };
         var auto = Combo(minutes.Select(m => m == 1 ? "1 minute" : $"{m} minutes").ToArray());
         var cur = Array.IndexOf(minutes, KeyVault.AutoLockMinutes);
@@ -664,31 +760,34 @@ public sealed class KeysStorePage : ToolPage
         ask.Checked += (_, _) => SettingsStore.Set("keys.askEvery", "on");
         ask.Unchecked += (_, _) => SettingsStore.Set("keys.askEvery", "off");
 
-        var panel = new StackPanel
+        dlg.Title = "Security";
+        dlg.CloseButtonText = "Close";
+        dlg.DefaultButton = ContentDialogButton.Close;
+        dlg.Content = new ScrollViewer
         {
-            Spacing = 10,
-            Children =
+            MaxHeight = 520,
+            Content = new StackPanel
             {
-                _helloState,
-                _helloBtn,
-                Row(Label("Lock automatically after"), auto, new TextBlock { Text = "without use", Opacity = 0.7, VerticalAlignment = VerticalAlignment.Center }),
-                ask,
-                Btn("Change master password", () => Run(ChangePasswordAsync)),
-                new TextBlock
+                Spacing = 12, Width = 460,
+                Children =
                 {
-                    Text = "Values are encrypted with AES-256-GCM; the key is derived from your password (PBKDF2, 600 000 rounds) and never written to disk. "
-                         + "Names, services and tags are stored unencrypted so the cards can be searched while locked.",
-                    Opacity = 0.65, FontSize = 12, TextWrapping = TextWrapping.Wrap,
+                    Row(state, lockBtn),
+                    helloInfo, helloBtn,
+                    Row(Label("Lock automatically after"), auto),
+                    ask,
+                    changeBtn,
+                    new TextBlock
+                    {
+                        Text = "Values are encrypted with AES-256-GCM; the key is derived from your master password (PBKDF2, 600 000 rounds) and is never written to disk. "
+                             + "Names, services and tags are stored unencrypted so the cards can be searched while locked.",
+                        Opacity = 0.65, FontSize = 12, TextWrapping = TextWrapping.Wrap,
+                    },
                 },
             },
         };
-        return new Expander
-        {
-            Header = "Security",
-            Content = panel,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            HorizontalContentAlignment = HorizontalAlignment.Left,
-        };
+
+        await dlg.ShowAsync();
+        if (next != null) await next();
     }
 
     private async Task ToggleHelloAsync()
@@ -698,11 +797,6 @@ public sealed class KeysStorePage : ToolPage
         {
             await KeyVault.DisableHelloAsync();
             Status.Text = "Windows Hello turned off for the Keys Store.";
-            return;
-        }
-        if (!KeyVault.Exists)
-        {
-            Status.Text = "Add a key first — that creates the vault and its master password.";
             return;
         }
         if (!KeyVault.IsUnlocked)
@@ -732,15 +826,12 @@ public sealed class KeysStorePage : ToolPage
         var next = new PasswordBox { Header = "New password (at least 8 characters)", MinWidth = 340 };
         var again = new PasswordBox { Header = "Repeat the new password", MinWidth = 340 };
         var err = new TextBlock { Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
-        var dlg = new ContentDialog
-        {
-            XamlRoot = XamlRoot,
-            Title = "Change master password",
-            PrimaryButtonText = "Change",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Primary,
-            Content = new StackPanel { Spacing = 10, Children = { current, next, again, err } },
-        };
+        var dlg = NewDialog();
+        dlg.Title = "Change master password";
+        dlg.PrimaryButtonText = "Change";
+        dlg.CloseButtonText = "Cancel";
+        dlg.DefaultButton = ContentDialogButton.Primary;
+        dlg.Content = new StackPanel { Spacing = 10, Children = { current, next, again, err } };
         dlg.PrimaryButtonClick += async (_, a) =>
         {
             var deferral = a.GetDeferral();

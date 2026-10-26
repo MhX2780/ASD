@@ -1,7 +1,7 @@
 <#
   record-demo.ps1
   Records the desktop to an MP4 (ffmpeg + gdigrab) while launching ASD.exe and clicking
-  ONLY through the Keys Store page (open it, "Add key", Security) with REAL mouse clicks (so the cursor and the clicks are visible in the video).
+  ONLY through the Keys Store page (create the vault, add 5 keys, favorite, search/filter, open, edit, delete, lock/unlock) with REAL mouse clicks (so the cursor and the clicks are visible in the video).
   Elements are located with Windows UI Automation (by their visible text), never by fixed pixels.
 
   Usage (from the workflow):
@@ -15,7 +15,7 @@ param(
     [Parameter(Mandatory)] [string] $OutFile,
     [string] $LogFile = (Join-Path $env:RUNNER_TEMP 'record-demo-log.txt'),
     [int] $Fps = 60,   # the runner display is 60 Hz, so more than 60 adds nothing
-    [double] $PauseScale = 0.45,   # 1 = slow (old speed), 0.45 = fast. Scales every wait after a click
+    [double] $PauseScale = 0.3,   # 1 = slow (old speed), 0.3 = fast. Scales every wait after a click
     [string] $UpdateInfoUrl = 'https://github.com/MhX2780/ASD/releases/download/latest/update.txt',   # same URL the app checks
     [ValidateSet('light','dark','auto')] [string] $AppTheme = 'light',   # the app's own theme setting at start (the video starts in this theme)
     [ValidateSet('light','dark')] [string] $SystemTheme = 'light'   # what "Follow Windows" should look like
@@ -98,7 +98,7 @@ function Get-AppRoot {
     return $wins[0]
 }
 
-function Move-Mouse([int]$x, [int]$y, [int]$steps = 18) {
+function Move-Mouse([int]$x, [int]$y, [int]$steps = 10) {
     $p = New-Object Native+POINT
     [void][Native]::GetCursorPos([ref]$p)
     $sx = $p.X; $sy = $p.Y
@@ -106,13 +106,13 @@ function Move-Mouse([int]$x, [int]$y, [int]$steps = 18) {
         $t = $i / $steps
         $t = $t * $t * (3 - 2 * $t)                      # smooth ease-in/out
         [void][Native]::SetCursorPos([int]($sx + ($x - $sx) * $t), [int]($sy + ($y - $sy) * $t))
-        Start-Sleep -Milliseconds 10
+        Start-Sleep -Milliseconds 8
     }
 }
 
 function Click-Here {
     [Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)   # left down
-    Start-Sleep -Milliseconds 80
+    Start-Sleep -Milliseconds 50
     [Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # left up
 }
 
@@ -191,7 +191,7 @@ function Click-Named([string]$name, [int]$pauseMs = 1800, [int]$scrollTries = 0)
     $r = $hit.Rect
     $x = [int]($r.X + $r.Width / 2); $y = [int]($r.Y + $r.Height / 2)
     Move-Mouse $x $y
-    Start-Sleep -Milliseconds 250       # short hover dwell (hover animation still visible)
+    Start-Sleep -Milliseconds 120       # short hover dwell (hover animation still visible)
     Click-Here
     Log "CLICK '$name' at ($x,$y)"
     Start-Sleep -Milliseconds ([int]($pauseMs * $PauseScale))
@@ -266,6 +266,45 @@ function Click-Toggle($t, [int]$pauseMs = 1500) {
     Start-Sleep -Milliseconds ([int]($pauseMs * $PauseScale))
 }
 
+# ------------------------- typing helpers (Keys Store demo) -------------------------
+Add-Type -AssemblyName System.Windows.Forms
+$script:DemoPassword = 'Demo-Pass-2026'
+
+# types text like a person: one character at a time into whatever has the focus
+function Type-Text([string]$text, [int]$delayMs = 14) {
+    foreach ($ch in $text.ToCharArray()) {
+        $k = [string]$ch
+        if ('+^%~(){}[]'.Contains($k)) { $k = '{' + $k + '}' }
+        [System.Windows.Forms.SendKeys]::SendWait($k)
+        Start-Sleep -Milliseconds $delayMs
+    }
+}
+function Press-Keys([string]$keys, [int]$ms = 100) {
+    [System.Windows.Forms.SendKeys]::SendWait($keys)
+    Start-Sleep -Milliseconds $ms
+}
+
+# "Add new key" -> (first time: create the vault with the master password) -> fill the dialog -> pick an icon -> Save
+function Add-Key([string]$name, [string]$service, [string]$tags, [string]$value, [string]$icon) {
+    Log "adding key '$name'"
+    if (-not (Click-Named 'Add new key' 500)) { return }
+    $first = Wait-AnyName @('Create', 'Save') 30
+    if ($first -eq 'Create') {                                   # the vault does not exist yet
+        Start-Sleep -Milliseconds 300
+        Type-Text $script:DemoPassword; Press-Keys '{TAB}'; Type-Text $script:DemoPassword
+        [void](Click-Named 'Create' 400)
+        $first = Wait-AnyName @('Save') 30
+    }
+    if (-not $first) { Log "the add dialog did not appear for '$name'"; return }
+    Start-Sleep -Milliseconds 300
+    Type-Text $name; Press-Keys '{TAB}'
+    Type-Text $service; Press-Keys '{TAB}'
+    Type-Text $tags; Press-Keys '{TAB}'
+    Type-Text $value
+    if ($icon) { [void](Click-Named $icon 300) }
+    [void](Click-Named 'Save' 600)
+}
+
 # ------------------------- scenario -------------------------
 try {
     Set-SystemTheme $SystemTheme
@@ -311,21 +350,92 @@ try {
     Start-Sleep -Seconds 4          # splash (~1.4 s) + first render
     Move-Mouse 400 300 10
 
-    # Keys Store only: open it from the navigation, look around, press "Add key" and look at the dialog.
+    # ===== Keys Store: open it, create the vault, add 5 keys, then try every feature =====
     # the pane may start closed (its items are then not on screen): open it with the hamburger button first
     if (-not (Find-Element 'Keys Store')) {
         $toggle = Find-PaneToggle
-        if ($toggle) { Click-Toggle $toggle 1500 } else { Log 'pane toggle button not found (see the title-bar button list above)' }
+        if ($toggle) { Click-Toggle $toggle 1000 } else { Log 'pane toggle button not found (see the title-bar button list above)' }
     }
-    [void](Click-Named 'Keys Store' 2500)
+    [void](Click-Named 'Keys Store' 900)
 
-    # "Add key": on a fresh machine this opens the "Create your Keys Store" dialog (nothing is typed or saved)
-    if (Click-Named 'Add key' 3000) {
-        [void](Click-Named 'Cancel' 1500)          # close the dialog again
+    # 1) five keys, each with its own icon (the first one also creates the vault + master password)
+    Add-Key 'Azure-Storage'     'Azure'    'cloud, prod'  'DefaultEndpointsProtocol-demo-0001' 'Cloud'
+    Add-Key 'GitHub-Token'      'GitHub'   'dev, ci'      'ghp-demo-0002-AbCdEfGh'              'Developer'
+    Add-Key 'OpenAI-Production' 'OpenAI'   'ai, prod'     'sk-proj-demo-0003-XyZ'               'Website'
+    Add-Key 'Stripe-Live'       'Stripe'   'billing'      'sk-live-demo-0004-QwErTy'            'Payments'
+    Add-Key 'Telegram-Bot'      'Telegram' 'bot, dev'     '123456-demo-0005-TelegramToken'      'Email'
+
+    # 2) favorite: the star of the first card
+    [void](Click-Named 'Add to favorites' 700)
+
+    # 3) search + filters (closing the search clears everything)
+    if (Click-Named 'Search' 500) {
+        Type-Text 'git'                                  # the box is focused when it opens
+        Start-Sleep -Milliseconds 900
+        Press-Keys '^a'; Press-Keys '{DELETE}' 500
+        if (Click-Named 'All keys' 500) { [void](Click-Named 'Favorites' 900) }
+        if (Click-Named 'All tags' 500) { [void](Click-Named 'prod' 900) }
+        [void](Click-Named 'Search' 700)                 # close = reset
     }
 
-    # look at the Security section at the bottom of the page
-    [void](Click-Named 'Security' 2500 -scrollTries 3)
+    # 4) open a key: information dialog -> Copy, Hide, Show, Close
+    if (Click-Named 'GitHub-Token' 500) {
+        if (Wait-AnyName @('Close') 15) {
+            [void](Click-Named 'Copy' 700)
+            [void](Click-Named 'Hide' 600)
+            [void](Click-Named 'Show' 600)
+            [void](Click-Named 'Close' 500)
+        }
+    }
+
+    # 5) open a key and press Edit in its dialog, then cancel
+    if (Click-Named 'OpenAI-Production' 500) {
+        if (Wait-AnyName @('Edit') 15) {
+            [void](Click-Named 'Edit' 500)
+            if (Wait-AnyName @('Save') 10) { Start-Sleep -Milliseconds 500; [void](Click-Named 'Cancel' 500) }
+        }
+    }
+
+    # 6) rename the first card with its pencil
+    if (Click-Named 'Edit or rename' 500) {
+        if (Wait-AnyName @('Save') 10) {
+            Start-Sleep -Milliseconds 300
+            Press-Keys '^a'; Type-Text 'Azure-Storage-Prod'
+            [void](Click-Named 'Save' 700)
+        }
+    }
+
+    # 7) delete one key: find it with the search, pencil, Delete, confirm
+    if (Click-Named 'Search' 400) {
+        Type-Text 'telegram'
+        Start-Sleep -Milliseconds 700
+        if (Click-Named 'Edit or rename' 500) {
+            if (Click-Named 'Delete' 500) {
+                Start-Sleep -Milliseconds 900                 # the edit dialog closes, the confirm dialog opens
+                [void](Click-Named 'Delete' 700)
+            }
+        }
+        [void](Click-Named 'Search' 500)
+    }
+
+    # 8) lock from Security, then open a key again: the unlock dialog asks for the master password
+    if (Click-Named 'Security' 600) {
+        if (Wait-AnyName @('Lock now') 10) {
+            Start-Sleep -Milliseconds 500
+            [void](Click-Named 'Lock now' 700)
+        }
+    }
+    if (Click-Named 'Stripe-Live' 500) {
+        if (Wait-AnyName @('Password') 15) {
+            Start-Sleep -Milliseconds 300
+            Type-Text $script:DemoPassword
+            [void](Click-Named 'Password' 500)
+            if (Wait-AnyName @('Close') 20) { Start-Sleep -Milliseconds 800; [void](Click-Named 'Close' 500) }
+        }
+    }
+
+    # last look at the Security dialog, then close it
+    if (Click-Named 'Security' 600) { [void](Click-Named 'Close' 500) }
 
     Log 'scenario finished'
 }
