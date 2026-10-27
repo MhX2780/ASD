@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Media;
 using Windows.ApplicationModel.DataTransfer;
 
@@ -377,6 +378,8 @@ public sealed class KeysStorePage : ToolPage
         }
     }
 
+    private enum Stage { Auth, Busy, Info }
+
     private async Task RevealAsync(string id)
     {
         var entry = KeyVault.Find(id);
@@ -384,81 +387,241 @@ public sealed class KeysStorePage : ToolPage
         Status.Text = "";
 
         var askEvery = SettingsStore.Get("keys.askEvery", "off") == "on";
-        if (!KeyVault.IsUnlocked || askEvery)
-        {
-            if (!await AuthenticateAsync($"Open “{entry.Name}”")) { ShowList(); return; }
-        }
-        else
-        {
-            ShowBusy("Decrypting …");
-            await Task.Delay(450);
-        }
+        var needAuth = !KeyVault.IsUnlocked || askEvery;
+        var helloReady = needAuth && KeyVault.HelloEnabled && await KeyVault.IsHelloSupportedAsync();
 
-        var secret = KeyVault.Reveal(id);
-        ShowList();
-        await ShowInfoAsync(entry, secret);
+        if (await OpenKeyDialogAsync(entry, needAuth, helloReady)) await EditAsync(id);
     }
 
-    /// <summary>The key's information dialog: Close is the main button, Edit the other one.</summary>
-    private async Task ShowInfoAsync(KeyEntry e, string secret)
+    private static UIElement KeyTitle(KeyEntry e) => new StackPanel
     {
-        var meta = string.Join("  ·  ", new[] { e.Service }.Concat(e.Tags).Where(s => s.Length > 0));
-        var valueBox = new TextBox
+        Orientation = Orientation.Horizontal, Spacing = 12,
+        Children =
         {
-            Header = "Value", Text = secret, IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
-            FontFamily = new FontFamily("Consolas"), MinHeight = 84, MaxHeight = 220,
+            new FontIcon { Glyph = IconOf(e), FontSize = 24, VerticalAlignment = VerticalAlignment.Center },
+            new TextBlock { Text = e.Name, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 380 },
+        },
+    };
+
+    /// <summary>Fades an element's opacity (the final value is held, so the next fade starts from it).</summary>
+    private static Task FadeAsync(UIElement el, double from, double to, int ms = 180)
+    {
+        var done = new TaskCompletionSource();
+        var anim = new DoubleAnimation
+        {
+            From = from, To = to, Duration = new Duration(TimeSpan.FromMilliseconds(ms)),
+            FillBehavior = FillBehavior.HoldEnd,
         };
-        ScrollViewer.SetVerticalScrollBarVisibility(valueBox, ScrollBarVisibility.Auto);
+        Storyboard.SetTarget(anim, el);
+        Storyboard.SetTargetProperty(anim, "Opacity");
+        var sb = new Storyboard();
+        sb.Children.Add(anim);
+        sb.Completed += (_, _) => done.TrySetResult();
+        sb.Begin();
+        return done.Task;
+    }
 
-        var shown = true;
-        Button? toggle = null;
-        toggle = Btn("Hide", () =>
+    private async void Safe(Func<Task> work)
+    {
+        try { await work(); }
+        catch (Exception ex) { Fail(ex); }
+    }
+
+    /// <summary>
+    /// ONE dialog for the whole "open a key" trip. Its content is swapped with a fade:
+    ///   password / Windows Hello  →  progress ring in the middle  →  the key's information.
+    /// The buttons follow the stage (Windows Hello · Password · Cancel, then Close · Edit).
+    /// Returns true when the user pressed Edit.
+    /// </summary>
+    private async Task<bool> OpenKeyDialogAsync(KeyEntry e, bool needAuth, bool helloReady)
+    {
+        var stage = needAuth ? Stage.Auth : Stage.Busy;
+        var wantEdit = false;
+        var closed = false;
+        TextBox? valueBox = null;
+
+        // layer 1: master password / Windows Hello
+        var pw = new PasswordBox { PlaceholderText = "Master password", MinWidth = 340 };
+        var err = new TextBlock
         {
-            shown = !shown;
-            valueBox.Text = shown ? secret : new string('•', Math.Clamp(secret.Length, 8, 32));
-            toggle!.Content = shown ? "Hide" : "Show";
-        });
-        var copy = Btn("Copy", () => { });
-        copy.Click += (_, _) => { CopySecret(secret); copy.Content = "Copied"; ResetLabel(copy, "Copy"); };
-
-        var lines = new List<string>();
-        if (e.Expires is DateTime exp) lines.Add($"Expires {exp:yyyy-MM-dd}");
-        lines.Add($"Added {e.Created:yyyy-MM-dd HH:mm}");
-        lines.Add($"Changed {e.Modified:yyyy-MM-dd HH:mm}");
-
-        var body = new StackPanel { Spacing = 10, Width = 460 };
-        if (meta.Length > 0) body.Children.Add(new TextBlock { Text = meta, Opacity = 0.75, TextWrapping = TextWrapping.Wrap });
-        body.Children.Add(valueBox);
-        body.Children.Add(Row(copy, toggle));
-        if (e.Notes.Length > 0)
-            body.Children.Add(new TextBlock { Text = e.Notes, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true });
-        body.Children.Add(new TextBlock { Text = string.Join("   ·   ", lines), Opacity = 0.6, FontSize = 12, TextWrapping = TextWrapping.Wrap });
-        body.Children.Add(new TextBlock { Text = "The clipboard is cleared 30 seconds after you copy.", Opacity = 0.6, FontSize = 12, TextWrapping = TextWrapping.Wrap });
-
-        var dlg = NewDialog();
-        dlg.Title = new StackPanel
+            TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed,
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed),
+        };
+        var authView = new StackPanel
         {
-            Orientation = Orientation.Horizontal, Spacing = 12,
+            Spacing = 10, VerticalAlignment = VerticalAlignment.Center,
             Children =
             {
-                new FontIcon { Glyph = IconOf(e), FontSize = 24, VerticalAlignment = VerticalAlignment.Center },
-                new TextBlock { Text = e.Name, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 380 },
+                new TextBlock { Text = helloReady ? "Use Windows Hello, or type your master password." : "Type your master password.", TextWrapping = TextWrapping.Wrap },
+                pw, err,
             },
         };
-        dlg.PrimaryButtonText = "Close";
-        dlg.SecondaryButtonText = "Edit";
-        dlg.DefaultButton = ContentDialogButton.Primary;
-        dlg.Content = new ScrollViewer { MaxHeight = 480, Content = body };
 
-        _infoDialog = dlg;
-        ContentDialogResult result;
-        try { result = await dlg.ShowAsync(); }
-        finally
+        // layer 2: progress ring, centred in the dialog
+        var busyText = new TextBlock { Text = "Decrypting …", HorizontalAlignment = HorizontalAlignment.Center, Opacity = 0.8 };
+        var busyView = new StackPanel
         {
-            _infoDialog = null;
-            valueBox.Text = "";
+            Spacing = 14, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            Children = { new ProgressRing { IsActive = true, Width = 56, Height = 56, HorizontalAlignment = HorizontalAlignment.Center }, busyText },
+        };
+
+        // layer 3: the key itself (filled once it is decrypted)
+        var infoView = new StackPanel { Spacing = 10 };
+
+        authView.Visibility = needAuth ? Visibility.Visible : Visibility.Collapsed;
+        busyView.Visibility = needAuth ? Visibility.Collapsed : Visibility.Visible;
+        infoView.Visibility = Visibility.Collapsed;
+        FrameworkElement current = needAuth ? authView : busyView;
+
+        var dlg = NewDialog();
+        dlg.Title = KeyTitle(e);
+        dlg.Content = new ScrollViewer
+        {
+            MaxHeight = 480,
+            Content = new Grid { Width = 460, MinHeight = 230, Children = { authView, busyView, infoView } },
+        };
+
+        void Buttons(string? primary, string? secondary, string? close, ContentDialogButton def)
+        {
+            dlg.PrimaryButtonText = primary ?? "";
+            dlg.SecondaryButtonText = secondary ?? "";
+            dlg.CloseButtonText = close ?? "";
+            dlg.DefaultButton = def;
         }
-        if (result == ContentDialogResult.Secondary) await EditAsync(e.Id);
+        void AuthButtons() => Buttons(helloReady ? "Windows Hello" : null, "Password", "Cancel",
+                                       helloReady ? ContentDialogButton.Primary : ContentDialogButton.Secondary);
+
+        async Task GoToAsync(FrameworkElement next)
+        {
+            if (closed || ReferenceEquals(current, next)) return;
+            var from = current;
+            current = next;
+            await FadeAsync(from, 1, 0);
+            from.Visibility = Visibility.Collapsed;
+            next.Opacity = 0;
+            next.Visibility = Visibility.Visible;
+            await FadeAsync(next, 0, 1);
+        }
+
+        async Task ShowInfoAsync()
+        {
+            string secret;
+            try { secret = KeyVault.Reveal(e.Id); }
+            catch (Exception ex)
+            {
+                Status.Text = $"Error: {ex.Message}";
+                dlg.Hide();
+                return;
+            }
+
+            var meta = string.Join("  ·  ", new[] { e.Service }.Concat(e.Tags).Where(t => t.Length > 0));
+            valueBox = new TextBox
+            {
+                Header = "Value", Text = secret, IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
+                FontFamily = new FontFamily("Consolas"), MinHeight = 84, MaxHeight = 220,
+            };
+            ScrollViewer.SetVerticalScrollBarVisibility(valueBox, ScrollBarVisibility.Auto);
+
+            var box = valueBox;
+            var shown = true;
+            Button? toggle = null;
+            toggle = Btn("Hide", () =>
+            {
+                shown = !shown;
+                box.Text = shown ? secret : new string('•', Math.Clamp(secret.Length, 8, 32));
+                toggle!.Content = shown ? "Hide" : "Show";
+            });
+            var copy = Btn("Copy", () => { });
+            copy.Click += (_, _) => { CopySecret(secret); copy.Content = "Copied"; ResetLabel(copy, "Copy"); };
+
+            var lines = new List<string>();
+            if (e.Expires is DateTime exp) lines.Add($"Expires {exp:yyyy-MM-dd}");
+            lines.Add($"Added {e.Created:yyyy-MM-dd HH:mm}");
+            lines.Add($"Changed {e.Modified:yyyy-MM-dd HH:mm}");
+
+            infoView.Children.Clear();
+            if (meta.Length > 0) infoView.Children.Add(new TextBlock { Text = meta, Opacity = 0.75, TextWrapping = TextWrapping.Wrap });
+            infoView.Children.Add(box);
+            infoView.Children.Add(Row(copy, toggle));
+            if (e.Notes.Length > 0)
+                infoView.Children.Add(new TextBlock { Text = e.Notes, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true });
+            infoView.Children.Add(new TextBlock { Text = string.Join("   ·   ", lines), Opacity = 0.6, FontSize = 12, TextWrapping = TextWrapping.Wrap });
+            infoView.Children.Add(new TextBlock { Text = "The clipboard is cleared 30 seconds after you copy.", Opacity = 0.6, FontSize = 12, TextWrapping = TextWrapping.Wrap });
+
+            await GoToAsync(infoView);
+            if (closed) return;
+            _infoDialog = dlg;                      // so an idle lock can close it
+            stage = Stage.Info;
+            Buttons("Close", "Edit", null, ContentDialogButton.Primary);
+        }
+
+        async Task UnlockAsync(bool hello)
+        {
+            var typed = pw.Password;
+            if (!hello && typed.Length == 0)
+            {
+                err.Text = "Type your master password.";
+                err.Visibility = Visibility.Visible;
+                return;
+            }
+
+            stage = Stage.Busy;
+            Buttons(null, null, null, ContentDialogButton.None);
+            busyText.Text = hello ? "Waiting for Windows Hello …" : "Unlocking …";
+            await GoToAsync(busyView);
+
+            var ok = hello ? await KeyVault.UnlockWithHelloAsync()
+                           : await Task.Run(() => KeyVault.UnlockWithPassword(typed));
+            if (closed) return;
+
+            if (!ok)
+            {
+                err.Text = hello ? "Windows Hello did not unlock the vault. Use your master password." : "Wrong password.";
+                err.Visibility = Visibility.Visible;
+                pw.Password = "";
+                stage = Stage.Auth;
+                AuthButtons();
+                await GoToAsync(authView);
+                pw.Focus(FocusState.Programmatic);
+                return;
+            }
+            busyText.Text = "Decrypting …";
+            await ShowInfoAsync();
+        }
+
+        if (needAuth) AuthButtons();
+        else Buttons(null, null, null, ContentDialogButton.None);
+
+        dlg.PrimaryButtonClick += (_, a) =>
+        {
+            if (stage == Stage.Info) return;                    // "Close": let the dialog close
+            a.Cancel = true;                                    // "Windows Hello": stay open and swap the content
+            if (stage == Stage.Auth) Safe(() => UnlockAsync(true));
+        };
+        dlg.SecondaryButtonClick += (_, a) =>
+        {
+            if (stage == Stage.Info) { wantEdit = true; return; }   // "Edit": close, then the edit dialog opens
+            a.Cancel = true;                                        // "Password"
+            if (stage == Stage.Auth) Safe(() => UnlockAsync(false));
+        };
+        pw.KeyDown += (_, k) =>
+        {
+            if (k.Key == Windows.System.VirtualKey.Enter && stage == Stage.Auth) Safe(() => UnlockAsync(false));
+        };
+        dlg.Opened += (_, _) =>
+        {
+            if (needAuth) { if (!helloReady) pw.Focus(FocusState.Programmatic); }
+            else Safe(async () => { await Task.Delay(450); await ShowInfoAsync(); });   // already unlocked: ring, then the key
+        };
+        dlg.Closed += (_, _) =>
+        {
+            closed = true;
+            _infoDialog = null;
+            if (valueBox != null) valueBox.Text = "";            // drop the decrypted value
+        };
+
+        await dlg.ShowAsync();
+        return wantEdit;
     }
 
     private static async void ResetLabel(Button b, string text)
