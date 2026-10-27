@@ -1,7 +1,7 @@
 <#
   record-demo.ps1
   Records the desktop to an MP4 (ffmpeg + gdigrab) while launching ASD.exe and clicking
-  ONLY through the Keys Store page (create the vault, add 5 keys, favorite, search/filter, open, edit, delete, lock/unlock) with REAL mouse clicks (so the cursor and the clicks are visible in the video).
+  ONLY through the Keys Store page (create the vault, add 4 keys, favorite, search/filter, open, edit, delete, lock/unlock) with REAL mouse clicks (so the cursor and the clicks are visible in the video).
   Elements are located with Windows UI Automation (by their visible text), never by fixed pixels.
 
   Usage (from the workflow):
@@ -15,7 +15,7 @@ param(
     [Parameter(Mandatory)] [string] $OutFile,
     [string] $LogFile = (Join-Path $env:RUNNER_TEMP 'record-demo-log.txt'),
     [int] $Fps = 60,   # the runner display is 60 Hz, so more than 60 adds nothing
-    [double] $PauseScale = 0.3,   # 1 = slow (old speed), 0.3 = fast. Scales every wait after a click
+    [double] $PauseScale = 0.4,   # 1 = slow (old speed), 0.4 = fast. Scales every wait after a click
     [string] $UpdateInfoUrl = 'https://github.com/MhX2780/ASD/releases/download/latest/update.txt',   # same URL the app checks
     [ValidateSet('light','dark','auto')] [string] $AppTheme = 'light',   # the app's own theme setting at start (the video starts in this theme)
     [ValidateSet('light','dark')] [string] $SystemTheme = 'light'   # what "Follow Windows" should look like
@@ -191,7 +191,7 @@ function Click-Named([string]$name, [int]$pauseMs = 1800, [int]$scrollTries = 0)
     $r = $hit.Rect
     $x = [int]($r.X + $r.Width / 2); $y = [int]($r.Y + $r.Height / 2)
     Move-Mouse $x $y
-    Start-Sleep -Milliseconds 120       # short hover dwell (hover animation still visible)
+    Start-Sleep -Milliseconds 170       # short hover dwell (hover animation still visible)
     Click-Here
     Log "CLICK '$name' at ($x,$y)"
     Start-Sleep -Milliseconds ([int]($pauseMs * $PauseScale))
@@ -284,25 +284,68 @@ function Press-Keys([string]$keys, [int]$ms = 100) {
     Start-Sleep -Milliseconds $ms
 }
 
+# Finds a visible TEXT FIELD (TextBox / PasswordBox) by its header text. Plain Find-Element would also match the
+# header's own TextBlock, and clicking that does not focus the box.
+function Find-Field([string]$name) {
+    $cond = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, $name)
+    foreach ($w in (Get-AppWindows)) {
+        foreach ($el in @($w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond))) {
+            try {
+                $c = $el.Current
+                if ($c.IsOffscreen) { continue }
+                if ($c.ControlType.ProgrammaticName -ne 'ControlType.Edit' -and $c.ControlType.ProgrammaticName -ne 'ControlType.Document') { continue }
+                $r = $c.BoundingRectangle
+                if ($r.IsEmpty -or $r.Width -lt 2 -or $r.Height -lt 2) { continue }
+                return [pscustomobject]@{ El = $el; Rect = $r }
+            } catch { }
+        }
+    }
+    return $null
+}
+
+# Clicks INTO a text field so it really has the keyboard focus, then (optionally) types. Never relies on Tab order.
+function Fill-Field([string]$field, [string]$text) {
+    $hit = Find-Field $field
+    if (-not $hit) {
+        Log "FIELD '$field' -> NOT FOUND (typing into whatever has the focus)"
+        Dump-Names $field
+    } else {
+        $r = $hit.Rect
+        Move-Mouse ([int]($r.X + $r.Width / 2)) ([int]($r.Y + $r.Height / 2)) 8
+        Start-Sleep -Milliseconds 100
+        Click-Here
+        try { $hit.El.SetFocus() } catch { }          # belt and braces: also focus through UI Automation
+        Start-Sleep -Milliseconds 200
+        Log "FIELD '$field' focused"
+    }
+    if ($text) { Type-Text $text }
+}
+
 # "Add new key" -> (first time: create the vault with the master password) -> fill the dialog -> pick an icon -> Save
 function Add-Key([string]$name, [string]$service, [string]$tags, [string]$value, [string]$icon) {
     Log "adding key '$name'"
-    if (-not (Click-Named 'Add new key' 500)) { return }
+    if (-not (Click-Named 'Add new key' 700)) { return }
     $first = Wait-AnyName @('Create', 'Save') 30
     if ($first -eq 'Create') {                                   # the vault does not exist yet
-        Start-Sleep -Milliseconds 300
-        Type-Text $script:DemoPassword; Press-Keys '{TAB}'; Type-Text $script:DemoPassword
-        [void](Click-Named 'Create' 400)
+        Start-Sleep -Milliseconds 500
+        Fill-Field 'Master password (at least 8 characters)' $script:DemoPassword
+        Fill-Field 'Repeat the password' $script:DemoPassword
+        [void](Click-Named 'Create' 600)
         $first = Wait-AnyName @('Save') 30
     }
-    if (-not $first) { Log "the add dialog did not appear for '$name'"; return }
-    Start-Sleep -Milliseconds 300
-    Type-Text $name; Press-Keys '{TAB}'
-    Type-Text $service; Press-Keys '{TAB}'
-    Type-Text $tags; Press-Keys '{TAB}'
-    Type-Text $value
-    if ($icon) { [void](Click-Named $icon 300) }
-    [void](Click-Named 'Save' 600)
+    if (-not $first) { Log "the add dialog did not appear for '$name'"; Dump-Names 'add dialog'; return }
+    Start-Sleep -Milliseconds 500                                # let the dialog finish its opening animation
+    Fill-Field 'Name' $name
+    Fill-Field 'Service' $service
+    Fill-Field 'Tags (comma separated)' $tags
+    Fill-Field 'Value' $value
+    if ($icon) { [void](Click-Named $icon 400) }
+    [void](Click-Named 'Save' 900)
+
+    # check the result: the dialog must be gone and the new card must be on the page
+    Start-Sleep -Milliseconds 600
+    if (Find-Element $name) { Log "OK: key '$name' is on the page" }
+    else { Log "PROBLEM: key '$name' is not visible after Save"; Dump-Names "key $name" }
 }
 
 # ------------------------- scenario -------------------------
@@ -350,7 +393,7 @@ try {
     Start-Sleep -Seconds 4          # splash (~1.4 s) + first render
     Move-Mouse 400 300 10
 
-    # ===== Keys Store: open it, create the vault, add 5 keys, then try every feature =====
+    # ===== Keys Store: open it, create the vault, add 4 keys, then try every feature =====
     # the pane may start closed (its items are then not on screen): open it with the hamburger button first
     if (-not (Find-Element 'Keys Store')) {
         $toggle = Find-PaneToggle
@@ -358,12 +401,11 @@ try {
     }
     [void](Click-Named 'Keys Store' 900)
 
-    # 1) five keys, each with its own icon (the first one also creates the vault + master password)
+    # 1) four keys, each with its own icon (the first one also creates the vault + master password)
     Add-Key 'Azure-Storage'     'Azure'    'cloud, prod'  'DefaultEndpointsProtocol-demo-0001' 'Cloud'
     Add-Key 'GitHub-Token'      'GitHub'   'dev, ci'      'ghp-demo-0002-AbCdEfGh'              'Developer'
     Add-Key 'OpenAI-Production' 'OpenAI'   'ai, prod'     'sk-proj-demo-0003-XyZ'               'Website'
     Add-Key 'Stripe-Live'       'Stripe'   'billing'      'sk-live-demo-0004-QwErTy'            'Payments'
-    Add-Key 'Telegram-Bot'      'Telegram' 'bot, dev'     '123456-demo-0005-TelegramToken'      'Email'
 
     # 2) favorite: the star of the first card
     [void](Click-Named 'Add to favorites' 700)
@@ -399,7 +441,8 @@ try {
     # 6) rename the first card with its pencil
     if (Click-Named 'Edit or rename' 500) {
         if (Wait-AnyName @('Save') 10) {
-            Start-Sleep -Milliseconds 300
+            Start-Sleep -Milliseconds 500
+            Fill-Field 'Name' ''
             Press-Keys '^a'; Type-Text 'Azure-Storage-Prod'
             [void](Click-Named 'Save' 700)
         }
@@ -407,7 +450,7 @@ try {
 
     # 7) delete one key: find it with the search, pencil, Delete, confirm
     if (Click-Named 'Search' 400) {
-        Type-Text 'telegram'
+        Type-Text 'github'
         Start-Sleep -Milliseconds 700
         if (Click-Named 'Edit or rename' 500) {
             if (Click-Named 'Delete' 500) {
