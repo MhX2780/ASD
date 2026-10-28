@@ -375,7 +375,7 @@ public sealed class KeysStorePage : ToolPage
 
         var content = new StackPanel
         {
-            Spacing = 3, Margin = new Thickness(0, 0, 58, 0), HorizontalAlignment = HorizontalAlignment.Left,
+            Spacing = 3, Margin = new Thickness(0, 0, 92, 0), HorizontalAlignment = HorizontalAlignment.Left,
             Children =
             {
                 IconView(e.Icon, 22, HorizontalAlignment.Left, new Thickness(0, 0, 0, 4)),
@@ -414,6 +414,16 @@ public sealed class KeysStorePage : ToolPage
             Margin = new Thickness(0, 10, 10, 0),
             Children = { edit, star },
         };
+        if (KeyVault.IsUnlocked)    // quick copy straight from the card while the vault is open
+        {
+            var copy = SmallIconButton("\uE8C8", "Copy key");
+            copy.Click += (_, _) =>
+            {
+                try { CopySecret(KeyVault.Reveal(e.Id)); }
+                catch (Exception ex) { Fail(ex); }
+            };
+            corner.Children.Insert(0, copy);
+        }
 
         var g = new Grid { Height = 124 };
         g.Children.Add(main);
@@ -1117,6 +1127,9 @@ public sealed class KeysStorePage : ToolPage
 
         var changeBtn = Btn("Change master password", () => { next = ChangePasswordAsync; dlg.Hide(); });
         changeBtn.IsEnabled = exists;
+        var exportBtn = Btn("Export backup …", () => { next = ExportAsync; dlg.Hide(); });
+        exportBtn.IsEnabled = exists;
+        var importBtn = Btn("Import backup …", () => { next = ImportAsync; dlg.Hide(); });
 
         var minutes = new[] { 1, 5, 15, 30, 60 };
         var auto = Combo(minutes.Select(m => m == 1 ? "1 minute" : $"{m} minutes").ToArray());
@@ -1147,6 +1160,9 @@ public sealed class KeysStorePage : ToolPage
                     Row(Label("Lock automatically after"), auto),
                     ask,
                     changeBtn,
+                    new TextBlock { Text = "Backup", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 6, 0, 0) },
+                    new TextBlock { Text = "A backup is the encrypted vault in one file. Keep it together with your master password: you need both to restore it.", Opacity = 0.7, FontSize = 12, TextWrapping = TextWrapping.Wrap },
+                    Row(exportBtn, importBtn),
                     new TextBlock
                     {
                         Text = "Values are encrypted with AES-256-GCM; the key is derived from your master password (PBKDF2, 600 000 rounds) and is never written to disk. "
@@ -1227,6 +1243,90 @@ public sealed class KeysStorePage : ToolPage
         dlg.Opened += (_, _) => current.Focus(FocusState.Programmatic);
 
         if (await dlg.ShowAsync() == ContentDialogResult.Primary) Status.Text = "Master password changed.";
+    }
+
+    // ───────────────────────── backup ─────────────────────────
+    private async Task ExportAsync()
+    {
+        Status.Text = "";
+        if (!KeyVault.Exists) { Status.Text = "There is no vault to back up yet."; return; }
+
+        var picker = new Windows.Storage.Pickers.FileSavePicker { SuggestedFileName = $"ASD-keys-{DateTime.Now:yyyyMMdd}" };
+        picker.FileTypeChoices.Add("ASD key vault backup", new List<string> { ".asdvault" });
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindow));
+        var file = await picker.PickSaveFileAsync();
+        if (file == null) return;
+
+        KeyVault.ExportTo(file.Path);
+        Status.Text = $"Backup saved to {file.Path}. Keep it together with your master password.";
+    }
+
+    private async Task ImportAsync()
+    {
+        Status.Text = "";
+        var picker = new Windows.Storage.Pickers.FileOpenPicker();
+        picker.FileTypeFilter.Add(".asdvault");
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindow));
+        var file = await picker.PickSingleFileAsync();
+        if (file == null) return;
+        var path = file.Path;
+
+        if (!KeyVault.Exists)
+        {
+            KeyVault.InstallFrom(path);      // no vault on this PC yet: the backup becomes the vault
+            RebuildCards();
+            Status.Text = "Backup restored. Open a key and unlock it with the backup's master password.";
+            return;
+        }
+
+        if (!KeyVault.IsUnlocked)
+        {
+            if (!await AuthenticateAsync("Unlock to import a backup")) { ShowList(); return; }
+            ShowList();
+        }
+
+        var pw = new PasswordBox { Header = "Master password of the backup", MinWidth = 340, HorizontalAlignment = HorizontalAlignment.Stretch };
+        var err = new TextBlock { Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
+        (int Added, int Skipped)? outcome = null;
+
+        var dlg = NewDialog();
+        dlg.Title = "Import backup";
+        dlg.PrimaryButtonText = "Import";
+        dlg.CloseButtonText = "Cancel";
+        dlg.DefaultButton = ContentDialogButton.Primary;
+        dlg.Content = new StackPanel
+        {
+            Spacing = 10, Width = 400,
+            Children =
+            {
+                new TextBlock { Text = "Keys that are not in this vault yet are added. Keys that already exist are left untouched.", TextWrapping = TextWrapping.Wrap },
+                pw, err,
+            },
+        };
+        dlg.PrimaryButtonClick += async (_, a) =>
+        {
+            var deferral = a.GetDeferral();
+            try
+            {
+                var typed = pw.Password;
+                string? problem = null;
+                if (typed.Length == 0) problem = "Type the backup's master password.";
+                else
+                {
+                    outcome = await Task.Run(() => KeyVault.MergeFrom(path, typed));
+                    if (outcome == null) problem = "Wrong password for this backup.";
+                }
+                if (problem != null) { a.Cancel = true; err.Text = problem; err.Visibility = Visibility.Visible; }
+            }
+            catch (Exception ex) { a.Cancel = true; err.Text = ex.Message; err.Visibility = Visibility.Visible; }
+            finally { deferral.Complete(); }
+        };
+        dlg.Opened += (_, _) => pw.Focus(FocusState.Programmatic);
+
+        if (await dlg.ShowAsync() == ContentDialogResult.Primary && outcome != null)
+            RebuildCards();
+        if (outcome is { } r2)
+            Status.Text = $"Imported {r2.Added} key{(r2.Added == 1 ? "" : "s")}; {r2.Skipped} already existed or could not be read.";
     }
 
     // ───────────────────────── clipboard ─────────────────────────

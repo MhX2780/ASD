@@ -244,6 +244,84 @@ internal static class KeyVault
         try { return Reveal(id); } catch { return null; }
     }
 
+    // ───────── backup ─────────
+    /// <summary>Writes a copy of the encrypted vault (secrets stay encrypted) to <paramref name="path"/>. The Windows Hello wrap is left out: it only works on this PC.</summary>
+    public static void ExportTo(string path)
+    {
+        lock (Gate)
+        {
+            var f = Load();
+            var copy = new VaultFile
+            {
+                Version = f.Version, Salt = f.Salt, Iterations = f.Iterations, PasswordWrap = f.PasswordWrap, HelloWrap = null,
+                Entries = f.Entries.Select(e => e.Clone()).ToList(),
+            };
+            File.WriteAllText(path, JsonSerializer.Serialize(copy, Json));
+        }
+    }
+
+    private static VaultFile ReadBackup(string path)
+    {
+        var f = JsonSerializer.Deserialize<VaultFile>(File.ReadAllText(path), Json)
+                ?? throw new InvalidDataException("This is not an ASD key vault backup.");
+        if (f.Version != 1 || f.Salt.Length == 0 || f.PasswordWrap.Length == 0)
+            throw new InvalidDataException("This is not an ASD key vault backup.");
+        return f;
+    }
+
+    /// <summary>Restores a backup as THIS PC's vault (only when there is none yet). It stays locked: unlock it with the backup's master password.</summary>
+    public static void InstallFrom(string path)
+    {
+        var f = ReadBackup(path);
+        f.HelloWrap = null;
+        lock (Gate)
+        {
+            if (File.Exists(FilePath)) throw new InvalidOperationException("A vault already exists.");
+            _file = f;
+            Save();
+        }
+    }
+
+    /// <summary>
+    /// Adds the keys of a backup that this vault does not have yet (same id = already there). Needs the vault unlocked and the
+    /// backup's master password. Returns null when that password is wrong. Blocking: call from a background thread.
+    /// </summary>
+    public static (int Added, int Skipped)? MergeFrom(string path, string backupPassword)
+    {
+        var backup = ReadBackup(path);
+        var kek = Derive(backupPassword, Convert.FromBase64String(backup.Salt), backup.Iterations);
+        byte[] backupKey;
+        try { backupKey = Open(kek, backup.PasswordWrap, AadPassword); }
+        catch (CryptographicException) { Thread.Sleep(600); return null; }
+        finally { CryptographicOperations.ZeroMemory(kek); }
+
+        try
+        {
+            int added = 0, skipped = 0;
+            lock (Gate)
+            {
+                var file = Load();
+                var dek = RequireDek();
+                foreach (var e in backup.Entries)
+                {
+                    if (file.Entries.Any(x => x.Id == e.Id)) { skipped++; continue; }
+                    byte[] plain;
+                    try { plain = Open(backupKey, e.Secret, SecretAad(e.Id)); }
+                    catch (CryptographicException) { skipped++; continue; }
+                    var stored = e.Clone();
+                    stored.Secret = Seal(dek, plain, SecretAad(e.Id));   // re-encrypted with THIS vault's key
+                    CryptographicOperations.ZeroMemory(plain);
+                    file.Entries.Add(stored);
+                    added++;
+                }
+                if (added > 0) Save();
+                Touch();
+            }
+            return (added, skipped);
+        }
+        finally { CryptographicOperations.ZeroMemory(backupKey); }
+    }
+
     // ───────── Windows Hello ─────────
     public static async Task<bool> IsHelloSupportedAsync()
     {

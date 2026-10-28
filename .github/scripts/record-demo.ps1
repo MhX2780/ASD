@@ -1,7 +1,7 @@
 <#
   record-demo.ps1
   Records the desktop to an MP4 (ffmpeg + gdigrab) while launching ASD.exe and clicking
-  ONLY through the Keys Store page (create the vault, add 4 keys, favorite, search/filter, open, edit, delete, lock/unlock) with REAL mouse clicks (so the cursor and the clicks are visible in the video).
+  ONLY through the Keys Store page (create the vault, add 4 keys, favorite, quick copy, search/filter, open, edit, delete, lock/unlock, backup options) with REAL mouse clicks (so the cursor and the clicks are visible in the video).
   Elements are located with Windows UI Automation (by their visible text), never by fixed pixels.
 
   Usage (from the workflow):
@@ -506,8 +506,14 @@ try {
         }
     }
 
-    # last look at the Security dialog, then close it
-    if (Click-Named 'Security' 600) { [void](Click-Named 'Close' 500) }
+    # the vault is open again: the quick Copy button on a card copies the key without opening it
+    [void](Click-Named 'Copy key' 700)
+
+    # last look at the Security dialog (Windows Hello, auto-lock, backup export / import), then close it
+    if (Click-Named 'Security' 600) {
+        Start-Sleep -Milliseconds 1200
+        [void](Click-Named 'Close' 500)
+    }
 
     Log 'scenario finished'
 }
