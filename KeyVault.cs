@@ -9,6 +9,8 @@ internal sealed class KeyEntry
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "";
+    /// <summary>"String value": the name other tools use in <c>{{key:Ref}}</c> (no spaces). Empty = made from the name; see KeyRefs.RefOf.</summary>
+    public string Ref { get; set; } = "";
     public string Service { get; set; } = "";
     public List<string> Tags { get; set; } = new();
     public string Notes { get; set; } = "";
@@ -310,6 +312,10 @@ internal static class KeyVault
                     catch (CryptographicException) { skipped++; continue; }
                     var stored = e.Clone();
                     stored.Secret = Seal(dek, plain, SecretAad(e.Id));   // re-encrypted with THIS vault's key
+                    var wanted = KeyRefs.RefOf(stored);                  // keep every {{key:...}} reference unique
+                    var unique = wanted;
+                    for (var n = 2; file.Entries.Any(x => string.Equals(KeyRefs.RefOf(x), unique, StringComparison.OrdinalIgnoreCase)); n++) unique = wanted + "-" + n;
+                    stored.Ref = unique;
                     CryptographicOperations.ZeroMemory(plain);
                     file.Entries.Add(stored);
                     added++;

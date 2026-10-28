@@ -153,7 +153,7 @@ public sealed class KeysStorePage : ToolPage
 
             if (terms.Length > 0)
             {
-                var hay = $"{e.Name} {e.Service} {string.Join(' ', e.Tags)} {e.Notes}";
+                var hay = $"{e.Name} {KeyRefs.RefOf(e)} {e.Service} {string.Join(' ', e.Tags)} {e.Notes}";
                 if (inValues) hay += " " + (KeyVault.TryReveal(e.Id) ?? "");
                 hay = hay.ToLowerInvariant();
                 if (!terms.All(hay.Contains)) continue;
@@ -636,6 +636,11 @@ public sealed class KeysStorePage : ToolPage
             if (meta.Length > 0) infoView.Children.Add(new TextBlock { Text = meta, Opacity = 0.75, TextWrapping = TextWrapping.Wrap });
             infoView.Children.Add(box);
             infoView.Children.Add(Row(copy, toggle));
+            infoView.Children.Add(new TextBlock
+            {
+                Text = "In other tools (HTTP Track, cURL): " + KeyRefs.Token(e),
+                Opacity = 0.75, FontSize = 12, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true,
+            });
             if (e.Notes.Length > 0)
                 infoView.Children.Add(new TextBlock { Text = e.Notes, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true });
             infoView.Children.Add(new TextBlock { Text = string.Join("   ·   ", lines), Opacity = 0.6, FontSize = 12, TextWrapping = TextWrapping.Wrap });
@@ -774,7 +779,8 @@ public sealed class KeysStorePage : ToolPage
     /// <summary>What the Add / Edit dialog holds, kept while the "More icons" dialog is open (only one dialog can be open at a time).</summary>
     private sealed class Draft
     {
-        public string Name = "", Service = "", Tags = "", Value = "", Notes = "", Icon = "";
+        public string Name = "", Ref = "", Service = "", Tags = "", Value = "", Notes = "", Icon = "";
+        public bool RefTouched;   // false = the string value still follows the name while typing
         public DateTimeOffset? Expires;
         public bool Favorite;
     }
@@ -906,6 +912,7 @@ public sealed class KeysStorePage : ToolPage
         var draft = new Draft
         {
             Name = existing?.Name ?? "", Service = existing?.Service ?? "",
+            Ref = existing == null ? "" : KeyRefs.RefOf(existing), RefTouched = existing != null,   // an existing key keeps its reference when renamed
             Tags = existing == null ? "" : string.Join(", ", existing.Tags),
             Notes = existing?.Notes ?? "", Favorite = existing?.Favorite ?? false,
             Icon = existing == null ? Icons[0] : IconOf(existing),
@@ -915,6 +922,23 @@ public sealed class KeysStorePage : ToolPage
         while (true)   // loops once more after the "More icons" dialog, with everything typed so far kept in the draft
         {
             var name = new TextBox { Header = "Name", PlaceholderText = "e.g. OpenAI – production", Text = draft.Name };
+            var refBox = new TextBox { Header = "String value (optional, no spaces)", PlaceholderText = "e.g. Azure-Key", Text = draft.Ref, IsSpellCheckEnabled = false };
+            AutomationProperties.SetName(refBox, "String value");
+            var refHint = new TextBlock { Opacity = 0.7, FontSize = 12, TextWrapping = TextWrapping.Wrap };
+            var settingRef = false;
+            void UpdateHint()
+            {
+                var r = refBox.Text.Trim();
+                if (r.Length == 0) r = KeyRefs.Slug(name.Text);
+                refHint.Text = "Other tools use it as {{key:" + (r.Length > 0 ? r : "…") + "}}";
+            }
+            name.TextChanged += (_, _) =>
+            {
+                if (!draft.RefTouched) { settingRef = true; refBox.Text = KeyRefs.Slug(name.Text); settingRef = false; }
+                UpdateHint();
+            };
+            refBox.TextChanged += (_, _) => { if (!settingRef) draft.RefTouched = true; UpdateHint(); };
+            UpdateHint();
             var service = new TextBox { Header = "Service", PlaceholderText = "e.g. OpenAI, GitHub, Stripe", Text = draft.Service };
             var tags = new TextBox { Header = "Tags (comma separated)", PlaceholderText = "prod, billing", Text = draft.Tags };
             var value = new TextBox
@@ -941,14 +965,20 @@ public sealed class KeysStorePage : ToolPage
             dlg.Content = new ScrollViewer
             {
                 MaxHeight = 540,
-                Content = new StackPanel { Spacing = 10, Width = 460, Children = { icon, name, service, tags, value, notes, expires, fav, error } },
+                Content = new StackPanel { Spacing = 10, Width = 460, Children = { icon, name, refBox, refHint, service, tags, value, notes, expires, fav, error } },
             };
             if (!isNew) dlg.SecondaryButtonText = "Delete";
 
             dlg.PrimaryButtonClick += (_, a) =>
             {
                 string? problem = null;
+                var reference = refBox.Text.Trim();
+                if (reference.Length == 0) reference = KeyRefs.Slug(name.Text);
                 if (name.Text.Trim().Length == 0) problem = "Give the key a name.";
+                else if (reference.Length == 0) problem = "Type a string value with letters or digits: other tools use it as {{key:…}}.";
+                else if (!KeyRefs.IsValidRef(reference)) problem = "The string value cannot have spaces or symbols. Use letters, digits, - _ .";
+                else if (KeyVault.All().Any(k => k.Id != existing?.Id && string.Equals(KeyRefs.RefOf(k), reference, StringComparison.OrdinalIgnoreCase)))
+                    problem = "Another key already uses {{key:" + reference + "}}. Pick a different string value.";
                 else if (isNew && value.Text.Length == 0) problem = "Paste the key value.";
                 if (problem != null)
                 {
@@ -961,7 +991,7 @@ public sealed class KeysStorePage : ToolPage
 
             var res = await dlg.ShowAsync();
 
-            draft.Name = name.Text; draft.Service = service.Text; draft.Tags = tags.Text; draft.Value = value.Text;
+            draft.Name = name.Text; draft.Ref = refBox.Text; draft.Service = service.Text; draft.Tags = tags.Text; draft.Value = value.Text;
             draft.Notes = notes.Text; draft.Expires = expires.Date; draft.Favorite = fav.IsChecked == true;
 
             if (more)
@@ -975,6 +1005,7 @@ public sealed class KeysStorePage : ToolPage
 
             var entry = existing?.Clone() ?? new KeyEntry();
             entry.Name = draft.Name.Trim();
+            entry.Ref = draft.Ref.Trim().Length > 0 ? draft.Ref.Trim() : KeyRefs.Slug(entry.Name);
             entry.Service = draft.Service.Trim();
             entry.Tags = draft.Tags.Split(new[] { ',', ';', '،' }, StringSplitOptions.RemoveEmptyEntries)
                 .Select(t => t.Trim()).Where(t => t.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
@@ -1127,9 +1158,9 @@ public sealed class KeysStorePage : ToolPage
 
         var changeBtn = Btn("Change master password", () => { next = ChangePasswordAsync; dlg.Hide(); });
         changeBtn.IsEnabled = exists;
-        var exportBtn = Btn("Export backup …", () => { next = ExportAsync; dlg.Hide(); });
+        var exportBtn = Btn("Export backup", () => { next = ExportAsync; dlg.Hide(); });
         exportBtn.IsEnabled = exists;
-        var importBtn = Btn("Import backup …", () => { next = ImportAsync; dlg.Hide(); });
+        var importBtn = Btn("Import backup", () => { next = ImportAsync; dlg.Hide(); });
 
         var minutes = new[] { 1, 5, 15, 30, 60 };
         var auto = Combo(minutes.Select(m => m == 1 ? "1 minute" : $"{m} minutes").ToArray());

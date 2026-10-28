@@ -19,6 +19,7 @@ public sealed class HttpTrackPage : ToolPage
     private readonly ConcurrentQueue<string> _queue = new();
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     private CancellationTokenSource? _cts;
+    private TextBox? _lastField;      // where "Insert key…" puts the placeholder
 
     public HttpTrackPage() : base("httptrack", "HTTP Track",
         "Send a request and watch it from start to finish: DNS, TCP, TLS, the bytes on the wire, the server's answer and a timing breakdown — every redirect included.")
@@ -32,6 +33,11 @@ public sealed class HttpTrackPage : ToolPage
         _headers = Input("headers", "Headers (Name: value, one per line)", 110, "Accept: application/json", persist: false);
         _body = Input("body", "Body (optional)", 110, persist: false);
         _curl = Input("curl", "Paste a cURL command to fill everything in", 70, "curl -X POST https://… -H 'Content-Type: application/json' -d '{…}'", persist: false);
+
+        _lastField = _headers;
+        _url.GotFocus += (_, _) => _lastField = _url;
+        _headers.GotFocus += (_, _) => _lastField = _headers;
+        _body.GotFocus += (_, _) => _lastField = _body;
 
         _follow = Check("Follow redirects", true);
         _insecure = Check("Ignore TLS certificate errors");
@@ -68,6 +74,8 @@ public sealed class HttpTrackPage : ToolPage
         Body.Children.Add(TwoCols(_headers, _body));
         Body.Children.Add(Row(_follow, _insecure, _decompress, _pretty));
         Body.Children.Add(Row(Label("Protocol:"), _version, Label("Timeout (s):"), _timeout));
+        Body.Children.Add(KeyRefs.InsertButton(() => _lastField ?? _headers));
+        Body.Children.Add(KeyRefs.HintText());
         Body.Children.Add(curlExpander);
         Body.Children.Add(Row(
             _send, _cancel,
@@ -134,20 +142,48 @@ public sealed class HttpTrackPage : ToolPage
 
     private async Task SendAsync()
     {
-        if (_cts != null) return;
+        if (_cts != null || !_send.IsEnabled) return;
         try
         {
             var opt = ReadOptions();
             if (opt.Url.Length == 0) { Status.Text = "Enter a URL first."; return; }
 
+            // {{key:Name}} placeholders: the values come from the Keys Store, after the master password
+            Func<string, string>? mask = null;
+            string? keyNote = null;
+            var names = KeyRefs.Names(opt.Url, opt.Body, string.Join("\n", opt.Headers.Select(h => h.Name + ": " + h.Value)));
+            if (names.Count > 0)
+            {
+                if (!KeyVault.Exists)
+                {
+                    Status.Text = "This request uses {{key:…}}, but there is no Keys Store yet. Create it from the Keys Store page first.";
+                    return;
+                }
+                _send.IsEnabled = false;
+                var why = "This request uses " + (names.Count == 1 ? "a key" : $"{names.Count} keys") + " from the Keys Store (" + string.Join(", ", names) + "). Unlock it to send.";
+                if (!await KeyUnlock.EnsureAsync(this, why)) { Status.Text = "Not sent: the Keys Store stayed locked."; return; }
+
+                var set = KeyRefs.Resolve(names);
+                if (set.Missing.Count > 0) { Status.Text = "No key named: " + string.Join(", ", set.Missing) + "."; return; }
+
+                opt.Url = KeyRefs.Replace(opt.Url, set);
+                opt.Body = opt.Body == null ? null : KeyRefs.Replace(opt.Body, set);
+                for (var i = 0; i < opt.Headers.Count; i++)
+                    opt.Headers[i] = (KeyRefs.Replace(opt.Headers[i].Name, set), KeyRefs.Replace(opt.Headers[i].Value, set));
+                mask = KeyRefs.Masker(set);
+                keyNote = "KEYS   " + string.Join(", ", set.Values.Keys) + " read from the Keys Store; the values are hidden in this log."
+                        + (set.Expired.Count > 0 ? "\n       ⚠ expired: " + string.Join(", ", set.Expired) : "");
+            }
+
             ClearLog();
+            if (keyNote != null) _queue.Enqueue(keyNote);
             _cts = new CancellationTokenSource();
             _send.IsEnabled = false;
             _cancel.IsEnabled = true;
             Status.Text = "Running…";
 
             var token = _cts.Token;
-            await Task.Run(() => HttpTracker.RunAsync(opt, line => _queue.Enqueue(line), token));
+            await Task.Run(() => HttpTracker.RunAsync(opt, line => _queue.Enqueue(mask == null ? line : mask(line)), token));
             Status.Text = "Finished.";
         }
         catch (Exception ex) { Fail(ex); }

@@ -1,7 +1,7 @@
 <#
   record-demo.ps1
   Records the desktop to an MP4 (ffmpeg + gdigrab) while launching ASD.exe and clicking
-  ONLY through the Keys Store page (create the vault, add 4 keys, favorite, quick copy, search/filter, open, edit, delete, lock/unlock, backup options) with REAL mouse clicks (so the cursor and the clicks are visible in the video).
+  ONLY through the Keys Store page (create the vault, add keys, favorite, quick copy, search/filter, open, edit, export a backup, delete keys, add a key, import the backup, lock/unlock) with REAL mouse clicks (so the cursor and the clicks are visible in the video).
   Elements are located with Windows UI Automation (by their visible text), never by fixed pixels.
 
   Usage (from the workflow):
@@ -367,6 +367,36 @@ function Add-Key([string]$name, [string]$service, [string]$tags, [string]$value,
     else { Log "PROBLEM: key '$name' is not visible after Save"; Dump-Names "key $name" }
 }
 
+# opens Security and presses one of its backup buttons ('Export backup' / 'Import backup'); the dialog closes and the file picker opens
+function Open-BackupPicker([string]$button) {
+    if (-not (Click-Named 'Security' 600)) { return $false }
+    if (-not (Wait-AnyName @($button) 10)) { Log "Security dialog: '$button' not found"; Dump-Names $button; return $false }
+    Start-Sleep -Milliseconds 700
+    [void](Click-Named $button 600)
+    # the Windows file dialog is a window of the app: wait for its "File name:" box, then type the full path and press Enter
+    if (-not (Wait-AnyName @('File name:') 25)) { Log 'the file dialog did not show a File name box (typing into whatever has the focus)'; Dump-Names 'file dialog'; Start-Sleep -Seconds 2 }
+    Start-Sleep -Milliseconds 700
+    return $true
+}
+
+# presses Delete for a key: open it, Edit, Delete, confirm
+function Delete-Key([string]$name) {
+    Log "deleting key '$name'"
+    if (-not (Click-Named $name 500)) { return }
+    if (Wait-AnyName @('Edit') 20) {
+        [void](Click-Named 'Edit' 500)
+        if (Wait-AnyName @('Save') 10) {
+            Start-Sleep -Milliseconds 500
+            if (Click-Named 'Delete' 500) {
+                Start-Sleep -Milliseconds 900                 # the edit dialog closes, the confirm dialog opens
+                [void](Click-Named 'Delete' 700)
+            }
+        }
+    }
+    Start-Sleep -Milliseconds 500
+    if (Find-Element $name) { Log "PROBLEM: '$name' is still on the page" } else { Log "OK: '$name' is gone" }
+}
+
 # ------------------------- scenario -------------------------
 try {
     Set-SystemTheme $SystemTheme
@@ -476,21 +506,38 @@ try {
         }
     }
 
-    # 7) delete one key: open it, Edit, Delete, confirm
-    if (Click-Named 'GitHub-Token' 500) {
-        if (Wait-AnyName @('Edit') 20) {
-            [void](Click-Named 'Edit' 500)
-            if (Wait-AnyName @('Save') 10) {
-                Start-Sleep -Milliseconds 500
-                if (Click-Named 'Delete' 500) {
-                    Start-Sleep -Milliseconds 900                 # the edit dialog closes, the confirm dialog opens
-                    [void](Click-Named 'Delete' 700)
-                }
-            }
-        }
+    # 7) BACKUP: export the vault to a file (Security -> Export backup -> file dialog)
+    $backup = Join-Path $runDir 'demo-backup.asdvault'
+    Remove-Item $backup -Force -ErrorAction SilentlyContinue
+    if (Open-BackupPicker 'Export backup') {
+        Type-Text $backup
+        Press-Keys '{ENTER}' 1500
+        if (Test-Path $backup) { Log ("OK: backup file written ({0} bytes)" -f (Get-Item $backup).Length) } else { Log 'PROBLEM: the backup file was not written' }
     }
 
-    # 8) lock from Security, then open a key again: the unlock dialog asks for the master password
+    # 8) delete two keys, then add a new one
+    Delete-Key 'GitHub-Token'
+    Delete-Key 'Gemini-API'
+    Add-Key 'Twilio-SMS' 'Twilio' 'sms, prod' 'SK-demo-0005-TwIlIo' 'Email'
+
+    # 9) IMPORT the backup: the two deleted keys come back, the new key stays
+    if (Test-Path $backup) {
+        if (Open-BackupPicker 'Import backup') {
+            Type-Text $backup
+            Press-Keys '{ENTER}' 1200
+            if (Wait-AnyName @('Import') 15) {
+                Start-Sleep -Milliseconds 500
+                Fill-Field 'Master password of the backup' $script:DemoPassword
+                [void](Click-Named 'Import' 1500)
+            } else { Log 'the import password dialog did not appear'; Dump-Names 'import dialog' }
+            Start-Sleep -Milliseconds 800
+            foreach ($k in 'GitHub-Token', 'Gemini-API', 'Twilio-SMS') {
+                if (Find-Element $k) { Log "OK: '$k' is on the page after the import" } else { Log "PROBLEM: '$k' missing after the import" }
+            }
+        }
+    } else { Log 'no backup file, so the import step is skipped' }
+
+    # 10) lock from Security, then open a key again: the unlock dialog asks for the master password
     if (Click-Named 'Security' 600) {
         if (Wait-AnyName @('Lock now') 10) {
             Start-Sleep -Milliseconds 500
