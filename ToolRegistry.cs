@@ -19,7 +19,7 @@ public static class ToolRegistry
             "home start welcome favorites", () => new HomePage()),
 
         // ── Keys Store (own navigation item, above Video Player, not in the Toolbox) ──
-        new("keys", "Keys Store", "Encrypted vault for API keys: Windows Hello, search, tags, expiry", "", "main",
+        new("keys", "Keys Store", "Encrypted vault for API keys: Windows Hello, search, tags, expiry", "\uE72E", "main",
             "keys key store vault api secret token password credential windows hello passkey encrypt safe", () => new KeysStorePage()),
 
         // ── Video Player (own navigation item, not in the Toolbox) ──

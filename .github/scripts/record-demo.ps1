@@ -321,6 +321,25 @@ function Fill-Field([string]$field, [string]$text) {
     if ($text) { Type-Text $text }
 }
 
+# Chooses the key's icon in the dialog. $icon = a built-in name from the drop-down ('Cloud', 'Payments' ...)
+# or 'more:<search>|<title>' to open "More icons", search for a brand logo and pick it (e.g. 'more:github|GitHub').
+function Pick-Icon([string]$icon) {
+    if (-not (Click-Named 'Icon picker' 500)) { return }
+    if (-not $icon.StartsWith('more:')) { [void](Click-Named $icon 500); return }
+
+    $spec  = $icon.Substring(5).Split('|')
+    $query = $spec[0]; $title = $spec[1]
+    if (-not (Click-Named 'More icons' 600)) { return }
+    if (Wait-AnyName @('Search icons') 15) {
+        Start-Sleep -Milliseconds 600
+        Type-Text $query
+        Start-Sleep -Milliseconds 1100
+        [void](Click-Named ('Icon ' + $title) 700)           # closes "More icons", the Add dialog comes back with everything typed
+        [void](Wait-AnyName @('Save') 15)
+        Start-Sleep -Milliseconds 500
+    }
+}
+
 # "Add new key" -> (first time: create the vault with the master password) -> fill the dialog -> pick an icon -> Save
 function Add-Key([string]$name, [string]$service, [string]$tags, [string]$value, [string]$icon) {
     Log "adding key '$name'"
@@ -339,7 +358,7 @@ function Add-Key([string]$name, [string]$service, [string]$tags, [string]$value,
     Fill-Field 'Service' $service
     Fill-Field 'Tags (comma separated)' $tags
     Fill-Field 'Value' $value
-    if ($icon) { [void](Click-Named $icon 400) }
+    if ($icon) { Pick-Icon $icon }
     [void](Click-Named 'Save' 900)
 
     # check the result: the dialog must be gone and the new card must be on the page
@@ -402,27 +421,36 @@ try {
     [void](Click-Named 'Keys Store' 900)
 
     # 1) four keys, each with its own icon (the first one also creates the vault + master password)
-    Add-Key 'Azure-Storage'     'Azure'    'cloud, prod'  'DefaultEndpointsProtocol-demo-0001' 'Cloud'
-    Add-Key 'GitHub-Token'      'GitHub'   'dev, ci'      'ghp-demo-0002-AbCdEfGh'              'Developer'
-    Add-Key 'OpenAI-Production' 'OpenAI'   'ai, prod'     'sk-proj-demo-0003-XyZ'               'Website'
-    Add-Key 'Stripe-Live'       'Stripe'   'billing'      'sk-live-demo-0004-QwErTy'            'Payments'
+    Add-Key 'Azure-Storage'  'Azure'  'cloud, prod' 'DefaultEndpointsProtocol-demo-0001' 'Cloud'
+    Add-Key 'GitHub-Token'   'GitHub' 'dev, ci'     'ghp-demo-0002-AbCdEfGh'              'more:github|GitHub'
+    Add-Key 'Gemini-API'     'Google' 'ai, prod'    'AIza-demo-0003-XyZ'                  'more:gemini|Google Gemini'
+    Add-Key 'Stripe-Live'    'Stripe' 'billing'     'sk-live-demo-0004-QwErTy'            'Payments'
 
     # 2) favorite: the star of the first card
     [void](Click-Named 'Add to favorites' 700)
 
-    # 3) search + filters (closing the search clears everything)
-    if (Click-Named 'Search' 500) {
-        Type-Text 'git'                                  # the box is focused when it opens
-        Start-Sleep -Milliseconds 900
-        Press-Keys '^a'; Press-Keys '{DELETE}' 500
-        if (Click-Named 'All keys' 500) { [void](Click-Named 'Favorites' 900) }
-        if (Click-Named 'All tags' 500) { [void](Click-Named 'prod' 900) }
-        [void](Click-Named 'Search' 700)                 # close = reset
+    # 3) Search dialog: type, clear, filters, then pick a result (it opens the key dialog)
+    if (Click-Named 'Search' 700) {
+        if (Wait-AnyName @('Search keys') 10) {
+            Start-Sleep -Milliseconds 500
+            Type-Text 'git'                                  # the box is focused when the dialog opens
+            Start-Sleep -Milliseconds 900
+            Press-Keys '^a'; Press-Keys '{DELETE}' 500
+            if (Click-Named 'All keys' 500) { [void](Click-Named 'Favorites' 900) }
+            if (Click-Named 'All tags' 500) { [void](Click-Named 'prod' 900) }
+            [void](Click-Named 'Result Azure-Storage' 600)   # closes the search and opens the key dialog
+            if (Wait-AnyName @('Copy') 20) {
+                [void](Click-Named 'Copy' 700)
+                [void](Click-Named 'Hide' 600)
+                [void](Click-Named 'Show' 600)
+                [void](Click-Named 'Close' 500)
+            }
+        }
     }
 
-    # 4) open a key: information dialog -> Copy, Hide, Show, Close
+    # 4) open a key from its card: information dialog -> Copy, Hide, Show, Close
     if (Click-Named 'GitHub-Token' 500) {
-        if (Wait-AnyName @('Close') 15) {
+        if (Wait-AnyName @('Copy') 20) {
             [void](Click-Named 'Copy' 700)
             [void](Click-Named 'Hide' 600)
             [void](Click-Named 'Show' 600)
@@ -431,7 +459,7 @@ try {
     }
 
     # 5) open a key and press Edit in its dialog, then cancel
-    if (Click-Named 'OpenAI-Production' 500) {
+    if (Click-Named 'Gemini-API' 500) {
         if (Wait-AnyName @('Edit') 15) {
             [void](Click-Named 'Edit' 500)
             if (Wait-AnyName @('Save') 10) { Start-Sleep -Milliseconds 500; [void](Click-Named 'Cancel' 500) }
@@ -448,17 +476,18 @@ try {
         }
     }
 
-    # 7) delete one key: find it with the search, pencil, Delete, confirm
-    if (Click-Named 'Search' 400) {
-        Type-Text 'github'
-        Start-Sleep -Milliseconds 700
-        if (Click-Named 'Edit or rename' 500) {
-            if (Click-Named 'Delete' 500) {
-                Start-Sleep -Milliseconds 900                 # the edit dialog closes, the confirm dialog opens
-                [void](Click-Named 'Delete' 700)
+    # 7) delete one key: open it, Edit, Delete, confirm
+    if (Click-Named 'GitHub-Token' 500) {
+        if (Wait-AnyName @('Edit') 20) {
+            [void](Click-Named 'Edit' 500)
+            if (Wait-AnyName @('Save') 10) {
+                Start-Sleep -Milliseconds 500
+                if (Click-Named 'Delete' 500) {
+                    Start-Sleep -Milliseconds 900                 # the edit dialog closes, the confirm dialog opens
+                    [void](Click-Named 'Delete' 700)
+                }
             }
         }
-        [void](Click-Named 'Search' 500)
     }
 
     # 8) lock from Security, then open a key again: the unlock dialog asks for the master password
@@ -469,10 +498,10 @@ try {
         }
     }
     if (Click-Named 'Stripe-Live' 500) {
-        if (Wait-AnyName @('Password') 15) {
+        if (Wait-AnyName @('Unlock') 15) {
             Start-Sleep -Milliseconds 300
             Type-Text $script:DemoPassword
-            [void](Click-Named 'Password' 500)
+            [void](Click-Named 'Unlock' 500)
             if (Wait-AnyName @('Close') 20) { Start-Sleep -Milliseconds 800; [void](Click-Named 'Close' 500) }
         }
     }

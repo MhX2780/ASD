@@ -24,7 +24,7 @@ public sealed class KeysStorePage : ToolPage
     private const string AllServices = "All services";
 
     private static readonly string[] Icons =
-        { "", "", "", "", "", "", "", "", "" };
+        { "\uE72E", "\uE753", "\uE774", "\uE715", "\uE716", "\uE71B", "\uE756", "\uE719", "\uE713" };
     private static readonly string[] IconNames =
         { "Key / vault", "Cloud", "Website", "Email", "Account", "Link", "Developer", "Payments", "Settings" };
 
@@ -37,19 +37,10 @@ public sealed class KeysStorePage : ToolPage
     };
     private readonly TextBlock _busyText = new() { HorizontalAlignment = HorizontalAlignment.Center, Opacity = 0.8 };
 
-    // search area (hidden until the Search button is pressed)
-    private readonly StackPanel _searchPanel = new() { Spacing = 8, Visibility = Visibility.Collapsed };
-    private readonly TextBox _search;
-    private readonly ComboBox _tagFilter = Combo(AllTags);
-    private readonly ComboBox _serviceFilter = Combo(AllServices);
-    private readonly ComboBox _stateFilter = Combo("All keys", "Favorites", "Expired", "Expiring in 30 days", "Has expiry", "No expiry");
-    private readonly CheckBox _inValues = Check("Also search inside values (while unlocked)");
-    private readonly TextBlock _count = new() { Opacity = 0.7 };
     private readonly StackPanel _cardsHost = new() { Spacing = 8 };
 
     private ContentDialog? _infoDialog;
     private bool _flow;          // a dialog / auth flow is running
-    private bool _suspend;       // ignore filter events while refilling the combos
     private bool _helloSupported;
     private int _copyToken;
 
@@ -57,10 +48,10 @@ public sealed class KeysStorePage : ToolPage
     {
         // ── header: title on one side, the buttons on the opposite side ──
         var title = new TextBlock { Text = "Keys Store", FontSize = 26, FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center };
-        var add = IconBtn("", "Add new key", () => Run(AddAsync), accent: true);
-        var searchBtn = IconBtn("", "Search", ToggleSearch);
+        var add = IconBtn("\uE710", "Add new key", () => Run(AddAsync), accent: true);
+        var searchBtn = IconBtn("\uE721", "Search", () => Run(SearchAsync));
         var gear = Btn("", () => Run(SecurityAsync));
-        gear.Content = new FontIcon { Glyph = "", FontSize = 16 };
+        gear.Content = new FontIcon { Glyph = "\uE713", FontSize = 16 };
         AutomationProperties.SetName(gear, "Security");
         ToolTipService.SetToolTip(gear, "Security");
 
@@ -78,22 +69,9 @@ public sealed class KeysStorePage : ToolPage
         header.Children.Add(actions);
         ((StackPanel)((ScrollViewer)Content).Content).Children[0] = header;   // replace the base class's title + subtitle block
 
-        // ── search area ──
-        _search = Input("search", "", 0, "Search name, service, tags, notes …", persist: false, multiline: false);
-        _search.TextChanged += (_, _) => { if (!_suspend) RebuildCards(); };
-        foreach (var c in new[] { _tagFilter, _serviceFilter, _stateFilter })
-            c.SelectionChanged += (_, _) => { if (!_suspend) RebuildCards(); };
-        _inValues.Checked += (_, _) => { if (!_suspend) RebuildCards(); };
-        _inValues.Unchecked += (_, _) => { if (!_suspend) RebuildCards(); };
-        _searchPanel.Children.Add(_search);
-        _searchPanel.Children.Add(Row(_tagFilter, _serviceFilter, _stateFilter));
-        _searchPanel.Children.Add(_inValues);
-        _searchPanel.Children.Add(_count);
-
         _busyView.Children.Add(new ProgressRing { IsActive = true, Width = 56, Height = 56, HorizontalAlignment = HorizontalAlignment.Center });
         _busyView.Children.Add(_busyText);
 
-        _listView.Children.Add(_searchPanel);
         _listView.Children.Add(_cardsHost);
         Body.Children.Add(_listView);
         Body.Children.Add(_busyView);
@@ -104,14 +82,13 @@ public sealed class KeysStorePage : ToolPage
             try
             {
                 _helloSupported = await KeyVault.IsHelloSupportedAsync();
-                RefreshFilters();
                 RebuildCards();
             }
             catch (Exception ex) { Fail(ex); }
         };
         Unloaded += (_, _) => KeyVault.Locked -= OnVaultLocked;
 
-        try { RefreshFilters(); RebuildCards(); }
+        try { RebuildCards(); }
         catch (Exception ex) { Fail(ex); }
     }
 
@@ -151,53 +128,10 @@ public sealed class KeysStorePage : ToolPage
         Status.Text = "Vault locked.";
     });
 
-    private void ToggleSearch()
+    // ───────────────────────── search dialog ─────────────────────────
+    private static IEnumerable<KeyEntry> Filter(List<KeyEntry> all, string text, string tag, string service, string state, bool inValues)
     {
-        var open = _searchPanel.Visibility != Visibility.Visible;
-        _searchPanel.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
-        if (open) { _search.Focus(FocusState.Programmatic); return; }
-
-        _suspend = true;                                  // closing the search clears it
-        _search.Text = "";
-        _tagFilter.SelectedIndex = 0;
-        _serviceFilter.SelectedIndex = 0;
-        _stateFilter.SelectedIndex = 0;
-        _inValues.IsChecked = false;
-        _suspend = false;
-        RebuildCards();
-    }
-
-    // ───────────────────────── cards / search / filter ─────────────────────────
-    private void RefreshFilters()
-    {
-        var all = KeyVault.All();
-        _suspend = true;
-        try
-        {
-            Refill(_tagFilter, AllTags, all.SelectMany(e => e.Tags));
-            Refill(_serviceFilter, AllServices, all.Select(e => e.Service));
-        }
-        finally { _suspend = false; }
-    }
-
-    private static void Refill(ComboBox box, string first, IEnumerable<string> values)
-    {
-        var keep = box.SelectedItem as string;
-        box.Items.Clear();
-        box.Items.Add(first);
-        foreach (var v in values.Where(v => v.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(v => v, StringComparer.OrdinalIgnoreCase))
-            box.Items.Add(v);
-        var idx = keep == null ? 0 : box.Items.IndexOf(keep);
-        box.SelectedIndex = idx < 0 ? 0 : idx;
-    }
-
-    private IEnumerable<KeyEntry> Filtered(List<KeyEntry> all)
-    {
-        var terms = (_search.Text ?? "").Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var tag = Sel(_tagFilter);
-        var service = Sel(_serviceFilter);
-        var state = Sel(_stateFilter);
-        var inValues = Is(_inValues) && KeyVault.IsUnlocked;
+        var terms = (text ?? "").Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var today = DateTime.Today;
 
         foreach (var e in all)
@@ -228,25 +162,151 @@ public sealed class KeysStorePage : ToolPage
         }
     }
 
+    /// <summary>
+    /// Search + filters in a dialog. The results are wide horizontal cards; picking one closes this dialog and
+    /// starts the normal "open a key" dialog (a ContentDialog cannot open another one on top of itself).
+    /// </summary>
+    private async Task SearchAsync()
+    {
+        Status.Text = "";
+        var all = KeyVault.All();
+        if (all.Count == 0) { Status.Text = "There are no keys to search yet."; return; }
+
+        var box = new TextBox { PlaceholderText = "Search name, service, tags, notes …", IsSpellCheckEnabled = false };
+        AutomationProperties.SetName(box, "Search keys");
+
+        var tag = Combo(AllTags);
+        var service = Combo(AllServices);
+        var state = Combo("All keys", "Favorites", "Expired", "Expiring in 30 days", "Has expiry", "No expiry");
+        foreach (var t in all.SelectMany(k => k.Tags).Where(t => t.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(t => t, StringComparer.OrdinalIgnoreCase))
+            tag.Items.Add(t);
+        foreach (var v in all.Select(k => k.Service).Where(v => v.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(v => v, StringComparer.OrdinalIgnoreCase))
+            service.Items.Add(v);
+
+        var inValues = Check("Also search inside values");
+        inValues.IsEnabled = KeyVault.IsUnlocked;       // values can only be searched while the vault is open
+        var count = new TextBlock { Opacity = 0.7, FontSize = 12 };
+        var results = new StackPanel { Spacing = 6 };
+
+        var dlg = NewDialog();
+        string? picked = null;
+        var shown = new List<KeyEntry>();
+
+        void Refresh()
+        {
+            shown = Filter(all, box.Text ?? "", Sel(tag), Sel(service), Sel(state), Is(inValues) && KeyVault.IsUnlocked)
+                .OrderByDescending(k => k.Favorite).ThenBy(k => k.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            count.Text = $"{shown.Count} of {all.Count} keys";
+            results.Children.Clear();
+            if (shown.Count == 0)
+                results.Children.Add(new TextBlock { Text = "Nothing matches your search or filters.", Opacity = 0.7, Margin = new Thickness(4, 8, 0, 0) });
+            foreach (var k in shown)
+            {
+                var id = k.Id;
+                results.Children.Add(WideCard(k, () => { picked = id; dlg.Hide(); }));
+            }
+        }
+
+        box.TextChanged += (_, _) => Refresh();
+        foreach (var c in new[] { tag, service, state }) c.SelectionChanged += (_, _) => Refresh();
+        inValues.Checked += (_, _) => Refresh();
+        inValues.Unchecked += (_, _) => Refresh();
+        box.KeyDown += (_, k) =>
+        {
+            if (k.Key == Windows.System.VirtualKey.Enter && shown.Count > 0) { picked = shown[0].Id; dlg.Hide(); }   // Enter opens the first result
+        };
+        Refresh();
+
+        dlg.Title = "Search keys";
+        dlg.CloseButtonText = "Close";
+        dlg.DefaultButton = ContentDialogButton.Close;
+        dlg.Content = new StackPanel
+        {
+            Spacing = 10, Width = 620,
+            Children = { box, Row(tag, service, state), inValues, count, new ScrollViewer { MaxHeight = 340, Content = results } },
+        };
+        dlg.Opened += (_, _) => box.Focus(FocusState.Programmatic);
+
+        await dlg.ShowAsync();
+        if (picked != null) await RevealAsync(picked);
+    }
+
+    /// <summary>A wide, horizontal result card: icon · name + details · favorite star / expiry.</summary>
+    private Button WideCard(KeyEntry e, Action onPick)
+    {
+        var meta = string.Join("  ·  ", new[] { e.Service }.Concat(e.Tags).Where(t => t.Length > 0));
+        var (expiryText, level) = ExpiryInfo(e);
+
+        var grid = new Grid { ColumnSpacing = 14 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var icon = IconView(e.Icon, 24);
+        var text = new StackPanel
+        {
+            Spacing = 2, VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                new TextBlock { Text = e.Name, FontWeight = FontWeights.Bold, TextTrimming = TextTrimming.CharacterEllipsis },
+                new TextBlock { Text = meta.Length > 0 ? meta : " ", Opacity = 0.7, FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis },
+            },
+        };
+        var right = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
+        if (expiryText != null)
+        {
+            var t = new TextBlock { Text = expiryText, FontSize = 12 };
+            if (level == 2) t.Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed);
+            else if (level == 1) t.Foreground = new SolidColorBrush(Microsoft.UI.Colors.Orange);
+            else t.Opacity = 0.6;
+            right.Children.Add(t);
+        }
+        if (e.Favorite) right.Children.Add(new FontIcon { Glyph = "\uE735", FontSize = 14 });
+
+        Grid.SetColumn(text, 1);
+        Grid.SetColumn(right, 2);
+        grid.Children.Add(icon);
+        grid.Children.Add(text);
+        grid.Children.Add(right);
+
+        var b = new Button
+        {
+            Content = grid, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(14, 10, 14, 10),
+        };
+        AutomationProperties.SetName(b, "Result " + e.Name);     // distinct from the card on the page behind the dialog
+        b.Click += (_, _) => onPick();
+        return b;
+    }
+
+    /// <summary>The top of every password / unlock dialog: a round icon, a heading and a short hint, centred.</summary>
+    private static UIElement AuthHeader(string heading, string hint)
+    {
+        var circle = new Border
+        {
+            Width = 72, Height = 72, CornerRadius = new CornerRadius(36), HorizontalAlignment = HorizontalAlignment.Center,
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(40, 128, 128, 128)),
+            Child = new FontIcon { Glyph = "\uE72E", FontSize = 32, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center },
+        };
+        return new StackPanel
+        {
+            Spacing = 6, HorizontalAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(0, 0, 0, 6),
+            Children =
+            {
+                circle,
+                new TextBlock { Text = heading, FontSize = 18, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 8, 0, 0) },
+                new TextBlock { Text = hint, Opacity = 0.7, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center },
+            },
+        };
+    }
+
     private void RebuildCards()
     {
         try
         {
-            // searching inside values only makes sense while unlocked
-            var open = KeyVault.IsUnlocked;
-            _inValues.IsEnabled = open;
-            if (!open && _inValues.IsChecked == true)
-            {
-                _suspend = true;
-                _inValues.IsChecked = false;
-                _suspend = false;
-            }
-            if (_inValues.IsChecked == true) KeyVault.Touch();
-
             var all = KeyVault.All();
-            var shown = Filtered(all).OrderByDescending(e => e.Favorite).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            var shown = all.OrderByDescending(e => e.Favorite).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
 
-            _count.Text = all.Count == 0 ? "" : $"{shown.Count} of {all.Count} keys";
             _cardsHost.Children.Clear();
 
             if (all.Count == 0)
@@ -257,7 +317,7 @@ public sealed class KeysStorePage : ToolPage
                     Spacing = 14, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 90, 0, 0),
                     Children =
                     {
-                        new FontIcon { Glyph = "", FontSize = 72, Opacity = 0.45, HorizontalAlignment = HorizontalAlignment.Center },
+                        new FontIcon { Glyph = "\uE72E", FontSize = 72, Opacity = 0.45, HorizontalAlignment = HorizontalAlignment.Center },
                         new TextBlock { Text = "Click Add Key above to add new key", Opacity = 0.7, HorizontalAlignment = HorizontalAlignment.Center, TextWrapping = TextWrapping.Wrap },
                     },
                 });
@@ -285,6 +345,29 @@ public sealed class KeysStorePage : ToolPage
 
     private static string IconOf(KeyEntry e) => string.IsNullOrEmpty(e.Icon) ? Icons[0] : e.Icon;
 
+    private Brush IconBrush() => new SolidColorBrush(ActualTheme == ElementTheme.Dark
+        ? Windows.UI.Color.FromArgb(255, 240, 240, 240) : Windows.UI.Color.FromArgb(255, 32, 32, 32));
+
+    /// <summary>A key's icon: a Segoe glyph (built-in) or a Simple Icons logo ("si:github"), drawn in the theme's text colour.</summary>
+    private FrameworkElement IconView(string? icon, double size, HorizontalAlignment h = HorizontalAlignment.Center, Thickness? margin = null)
+    {
+        FrameworkElement? el = null;
+        var brand = icon != null && icon.StartsWith(SimpleIcons.Prefix);
+        if (brand) el = SimpleIcons.Create(icon![SimpleIcons.Prefix.Length..], size, IconBrush());
+        el ??= new FontIcon { Glyph = string.IsNullOrEmpty(icon) || brand ? Icons[0] : icon, FontSize = size };
+        el.HorizontalAlignment = h;
+        el.VerticalAlignment = VerticalAlignment.Center;
+        if (margin is Thickness m) el.Margin = m;
+        return el;
+    }
+
+    private static string IconLabel(string key)
+    {
+        if (key.StartsWith(SimpleIcons.Prefix)) return SimpleIcons.Find(key[SimpleIcons.Prefix.Length..])?.Title ?? key[SimpleIcons.Prefix.Length..];
+        var i = Array.IndexOf(Icons, key);
+        return i >= 0 ? IconNames[i] : "Icon";
+    }
+
     private UIElement Card(KeyEntry e)
     {
         var meta = string.Join("  ·  ", new[] { e.Service }.Concat(e.Tags).Where(s => s.Length > 0));
@@ -295,7 +378,7 @@ public sealed class KeysStorePage : ToolPage
             Spacing = 3, Margin = new Thickness(0, 0, 58, 0), HorizontalAlignment = HorizontalAlignment.Left,
             Children =
             {
-                new FontIcon { Glyph = IconOf(e), FontSize = 22, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 4) },
+                IconView(e.Icon, 22, HorizontalAlignment.Left, new Thickness(0, 0, 0, 4)),
                 new TextBlock { Text = e.Name, FontWeight = FontWeights.Bold, FontSize = 16, TextTrimming = TextTrimming.CharacterEllipsis, HorizontalAlignment = HorizontalAlignment.Left },
                 new TextBlock { Text = meta.Length > 0 ? meta : " ", Opacity = 0.7, FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, HorizontalAlignment = HorizontalAlignment.Left },
             },
@@ -319,9 +402,9 @@ public sealed class KeysStorePage : ToolPage
         AutomationProperties.SetName(main, e.Name);
         main.Click += (_, _) => Run(() => RevealAsync(e.Id));
 
-        var star = SmallIconButton(e.Favorite ? "" : "", e.Favorite ? "Remove from favorites" : "Add to favorites");
+        var star = SmallIconButton(e.Favorite ? "\uE735" : "\uE734", e.Favorite ? "Remove from favorites" : "Add to favorites");
         star.Click += (_, _) => { KeyVault.SetFavorite(e.Id, !e.Favorite); RebuildCards(); };
-        var edit = SmallIconButton("", "Edit or rename");
+        var edit = SmallIconButton("\uE70F", "Edit or rename");
         edit.Click += (_, _) => Run(() => EditAsync(e.Id));
 
         var corner = new StackPanel
@@ -374,7 +457,7 @@ public sealed class KeysStorePage : ToolPage
         finally
         {
             _flow = false;
-            try { RefreshFilters(); RebuildCards(); } catch { /* page may be gone */ }
+            try { RebuildCards(); } catch { /* page may be gone */ }
         }
     }
 
@@ -393,12 +476,12 @@ public sealed class KeysStorePage : ToolPage
         if (await OpenKeyDialogAsync(entry, needAuth, helloReady)) await EditAsync(id);
     }
 
-    private static UIElement KeyTitle(KeyEntry e) => new StackPanel
+    private UIElement KeyTitle(KeyEntry e) => new StackPanel
     {
         Orientation = Orientation.Horizontal, Spacing = 12,
         Children =
         {
-            new FontIcon { Glyph = IconOf(e), FontSize = 24, VerticalAlignment = VerticalAlignment.Center },
+            IconView(e.Icon, 24, HorizontalAlignment.Left),
             new TextBlock { Text = e.Name, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 380 },
         },
     };
@@ -441,7 +524,7 @@ public sealed class KeysStorePage : ToolPage
         TextBox? valueBox = null;
 
         // layer 1: master password / Windows Hello
-        var pw = new PasswordBox { PlaceholderText = "Master password", MinWidth = 340 };
+        var pw = new PasswordBox { PlaceholderText = "Master password", MinWidth = 340, HorizontalAlignment = HorizontalAlignment.Stretch };
         var err = new TextBlock
         {
             TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed,
@@ -452,7 +535,7 @@ public sealed class KeysStorePage : ToolPage
             Spacing = 10, VerticalAlignment = VerticalAlignment.Center,
             Children =
             {
-                new TextBlock { Text = helloReady ? "Use Windows Hello, or type your master password." : "Type your master password.", TextWrapping = TextWrapping.Wrap },
+                AuthHeader("Unlock to open this key", helloReady ? "Use Windows Hello, or type your master password." : "Type your master password."),
                 pw, err,
             },
         };
@@ -488,7 +571,7 @@ public sealed class KeysStorePage : ToolPage
             dlg.CloseButtonText = close ?? "";
             dlg.DefaultButton = def;
         }
-        void AuthButtons() => Buttons(helloReady ? "Windows Hello" : null, "Password", "Cancel",
+        void AuthButtons() => Buttons(helloReady ? "Windows Hello" : null, "Unlock", "Cancel",
                                        helloReady ? ContentDialogButton.Primary : ContentDialogButton.Secondary);
 
         async Task GoToAsync(FrameworkElement next)
@@ -601,7 +684,7 @@ public sealed class KeysStorePage : ToolPage
         dlg.SecondaryButtonClick += (_, a) =>
         {
             if (stage == Stage.Info) { wantEdit = true; return; }   // "Edit": close, then the edit dialog opens
-            a.Cancel = true;                                        // "Password"
+            a.Cancel = true;                                        // "Unlock"
             if (stage == Stage.Auth) Safe(() => UnlockAsync(false));
         };
         pw.KeyDown += (_, k) =>
@@ -678,91 +761,219 @@ public sealed class KeysStorePage : ToolPage
 
     private sealed record EditResult(KeyEntry Entry, string? Secret, bool Delete);
 
+    /// <summary>What the Add / Edit dialog holds, kept while the "More icons" dialog is open (only one dialog can be open at a time).</summary>
+    private sealed class Draft
+    {
+        public string Name = "", Service = "", Tags = "", Value = "", Notes = "", Icon = "";
+        public DateTimeOffset? Expires;
+        public bool Favorite;
+    }
+
+    /// <summary>
+    /// "Icon" drop-down: the nine built-in icons, the currently chosen logo (if any) and "More icons".
+    /// Choosing "More icons" asks the caller to open the full picker.
+    /// </summary>
+    private ComboBox IconCombo(string current, Action onMore, Action<string> onPick)
+    {
+        var combo = new ComboBox { Header = "Icon", HorizontalAlignment = HorizontalAlignment.Stretch };
+        AutomationProperties.SetName(combo, "Icon picker");
+
+        ComboBoxItem Item(string key, string label, FrameworkElement icon)
+        {
+            var item = new ComboBoxItem
+            {
+                Tag = key,
+                Content = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal, Spacing = 10,
+                    Children = { icon, new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center } },
+                },
+            };
+            AutomationProperties.SetName(item, label);
+            return item;
+        }
+
+        for (var i = 0; i < Icons.Length; i++) combo.Items.Add(Item(Icons[i], IconNames[i], IconView(Icons[i], 18)));
+        if (!Icons.Contains(current)) combo.Items.Add(Item(current, IconLabel(current), IconView(current, 18)));   // a logo chosen earlier
+        combo.Items.Add(Item("more", "More icons", new FontIcon { Glyph = "\uE712", FontSize = 18 }));
+
+        foreach (var it in combo.Items.OfType<ComboBoxItem>())
+            if (it.Tag as string == current) { combo.SelectedItem = it; break; }
+
+        combo.SelectionChanged += (_, _) =>
+        {
+            if (combo.SelectedItem is not ComboBoxItem { Tag: string tag }) return;
+            if (tag == "more") onMore(); else onPick(tag);
+        };
+        return combo;
+    }
+
+    private sealed record IconDef(string Key, string Title, string Hay);
+
+    private sealed class IconFactory : IElementFactory
+    {
+        private readonly Func<IconDef, UIElement> _make;
+        public IconFactory(Func<IconDef, UIElement> make) => _make = make;
+        public UIElement GetElement(ElementFactoryGetArgs args) => _make((IconDef)args.Data);
+        public void RecycleElement(ElementFactoryRecycleArgs args) { }
+    }
+
+    /// <summary>The full icon picker: the built-in icons plus ~3 500 brand logos (Simple Icons), with search. Returns the chosen key or null.</summary>
+    private async Task<string?> PickIconAsync(string current)
+    {
+        var defs = new List<IconDef>();
+        for (var i = 0; i < Icons.Length; i++) defs.Add(new IconDef(Icons[i], IconNames[i], ("built-in " + IconNames[i]).ToLowerInvariant()));
+        foreach (var br in SimpleIcons.All) defs.Add(new IconDef(SimpleIcons.Prefix + br.Slug, br.Title, (br.Title + " " + br.Slug).ToLowerInvariant()));
+
+        var box = new TextBox { PlaceholderText = "Search icons — github, gemini, docker …", IsSpellCheckEnabled = false };
+        AutomationProperties.SetName(box, "Search icons");
+        var count = new TextBlock { Opacity = 0.7, FontSize = 12 };
+
+        var dlg = NewDialog();
+        string? picked = null;
+        var shown = defs;
+
+        UIElement Make(IconDef d)
+        {
+            var b = new Button
+            {
+                Content = IconView(d.Key, 28), Width = 64, Height = 64, Padding = new Thickness(0),
+                HorizontalContentAlignment = HorizontalAlignment.Center, VerticalContentAlignment = VerticalAlignment.Center,
+            };
+            if (d.Key == current) b.BorderThickness = new Thickness(2);
+            AutomationProperties.SetName(b, "Icon " + d.Title);
+            ToolTipService.SetToolTip(b, d.Title);
+            b.Click += (_, _) => { picked = d.Key; dlg.Hide(); };
+            return b;
+        }
+
+        var repeater = new ItemsRepeater
+        {
+            ItemTemplate = new IconFactory(Make),
+            Layout = new UniformGridLayout { MinItemWidth = 64, MinItemHeight = 64, MinRowSpacing = 6, MinColumnSpacing = 6 },
+        };
+
+        void Refresh()
+        {
+            var terms = (box.Text ?? "").Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            shown = terms.Length == 0 ? defs : defs.Where(d => terms.All(d.Hay.Contains)).ToList();
+            repeater.ItemsSource = shown;
+            count.Text = $"{shown.Count:N0} icons";
+        }
+        box.TextChanged += (_, _) => Refresh();
+        box.KeyDown += (_, k) =>
+        {
+            if (k.Key == Windows.System.VirtualKey.Enter && shown.Count > 0) { picked = shown[0].Key; dlg.Hide(); }
+        };
+        Refresh();
+
+        dlg.Title = "More icons";
+        dlg.CloseButtonText = "Cancel";
+        dlg.DefaultButton = ContentDialogButton.Close;
+        dlg.Content = new StackPanel
+        {
+            Spacing = 10, Width = 620,
+            Children =
+            {
+                box, count,
+                new ScrollViewer { Height = 380, Content = repeater },
+                new TextBlock
+                {
+                    Text = "Brand logos: Simple Icons (CC0). The logos are trademarks of their owners.",
+                    Opacity = 0.55, FontSize = 11, TextWrapping = TextWrapping.Wrap,
+                },
+            },
+        };
+        dlg.Opened += (_, _) => box.Focus(FocusState.Programmatic);
+
+        await dlg.ShowAsync();
+        return picked;
+    }
+
     private async Task<EditResult?> EditDialogAsync(KeyEntry? existing)
     {
         var isNew = existing == null;
-        var name = new TextBox { Header = "Name", PlaceholderText = "e.g. OpenAI – production", Text = existing?.Name ?? "" };
-        var service = new TextBox { Header = "Service", PlaceholderText = "e.g. OpenAI, GitHub, Stripe", Text = existing?.Service ?? "" };
-        var tags = new TextBox { Header = "Tags (comma separated)", PlaceholderText = "prod, billing", Text = existing == null ? "" : string.Join(", ", existing.Tags) };
-        var value = new TextBox
+        var draft = new Draft
         {
-            Header = isNew ? "Value" : "New value (leave empty to keep the current one)",
-            AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 84, IsSpellCheckEnabled = false,
-            FontFamily = new FontFamily("Consolas"),
+            Name = existing?.Name ?? "", Service = existing?.Service ?? "",
+            Tags = existing == null ? "" : string.Join(", ", existing.Tags),
+            Notes = existing?.Notes ?? "", Favorite = existing?.Favorite ?? false,
+            Icon = existing == null ? Icons[0] : IconOf(existing),
+            Expires = existing?.Expires is DateTime d ? new DateTimeOffset(d.Date) : null,
         };
-        ScrollViewer.SetVerticalScrollBarVisibility(value, ScrollBarVisibility.Auto);
-        var notes = new TextBox { Header = "Notes", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 64, Text = existing?.Notes ?? "" };
-        var expires = new CalendarDatePicker { Header = "Expires (optional)", PlaceholderText = "No expiry" };
-        if (existing?.Expires is DateTime d) expires.Date = new DateTimeOffset(d.Date);
-        var fav = new CheckBox { Content = "Favorite", IsChecked = existing?.Favorite ?? false };
-        var error = new TextBlock { Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
 
-        // icon picker: one of nine
-        var selected = existing == null ? Icons[0] : IconOf(existing);
-        if (!Icons.Contains(selected)) selected = Icons[0];
-        var iconButtons = new List<ToggleButton>();
-        var iconRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        for (var i = 0; i < Icons.Length; i++)
+        while (true)   // loops once more after the "More icons" dialog, with everything typed so far kept in the draft
         {
-            var glyph = Icons[i];
-            var tb = new ToggleButton
+            var name = new TextBox { Header = "Name", PlaceholderText = "e.g. OpenAI – production", Text = draft.Name };
+            var service = new TextBox { Header = "Service", PlaceholderText = "e.g. OpenAI, GitHub, Stripe", Text = draft.Service };
+            var tags = new TextBox { Header = "Tags (comma separated)", PlaceholderText = "prod, billing", Text = draft.Tags };
+            var value = new TextBox
             {
-                Content = new FontIcon { Glyph = glyph, FontSize = 18 },
-                Width = 40, Height = 40, Padding = new Thickness(0),
-                IsChecked = glyph == selected,
+                Header = isNew ? "Value" : "New value (leave empty to keep the current one)",
+                AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 84, IsSpellCheckEnabled = false,
+                FontFamily = new FontFamily("Consolas"), Text = draft.Value,
             };
-            AutomationProperties.SetName(tb, IconNames[i]);
-            ToolTipService.SetToolTip(tb, IconNames[i]);
-            tb.Click += (_, _) =>
+            ScrollViewer.SetVerticalScrollBarVisibility(value, ScrollBarVisibility.Auto);
+            var notes = new TextBox { Header = "Notes", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 64, Text = draft.Notes };
+            var expires = new CalendarDatePicker { Header = "Expires (optional)", PlaceholderText = "No expiry" };
+            if (draft.Expires != null) expires.Date = draft.Expires;
+            var fav = new CheckBox { Content = "Favorite", IsChecked = draft.Favorite };
+            var error = new TextBlock { Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
+
+            var more = false;
+            var dlg = NewDialog();
+            var icon = IconCombo(draft.Icon, () => { more = true; dlg.Hide(); }, v => draft.Icon = v);
+
+            dlg.Title = isNew ? "Add key" : "Edit key";
+            dlg.PrimaryButtonText = "Save";
+            dlg.CloseButtonText = "Cancel";
+            dlg.DefaultButton = ContentDialogButton.Primary;
+            dlg.Content = new ScrollViewer
             {
-                selected = glyph;
-                foreach (var b in iconButtons) b.IsChecked = ReferenceEquals(b, tb);
+                MaxHeight = 540,
+                Content = new StackPanel { Spacing = 10, Width = 460, Children = { icon, name, service, tags, value, notes, expires, fav, error } },
             };
-            iconButtons.Add(tb);
-            iconRow.Children.Add(tb);
-        }
-        var iconBox = new StackPanel { Spacing = 6, Children = { new TextBlock { Text = "Icon" }, iconRow } };
+            if (!isNew) dlg.SecondaryButtonText = "Delete";
 
-        var dlg = NewDialog();
-        dlg.Title = isNew ? "Add key" : "Edit key";
-        dlg.PrimaryButtonText = "Save";
-        dlg.CloseButtonText = "Cancel";
-        dlg.DefaultButton = ContentDialogButton.Primary;
-        dlg.Content = new ScrollViewer
-        {
-            MaxHeight = 520,
-            Content = new StackPanel { Spacing = 10, Width = 460, Children = { iconBox, name, service, tags, value, notes, expires, fav, error } },
-        };
-        if (!isNew) dlg.SecondaryButtonText = "Delete";
-
-        dlg.PrimaryButtonClick += (_, a) =>
-        {
-            string? problem = null;
-            if (name.Text.Trim().Length == 0) problem = "Give the key a name.";
-            else if (isNew && value.Text.Length == 0) problem = "Paste the key value.";
-            if (problem != null)
+            dlg.PrimaryButtonClick += (_, a) =>
             {
-                a.Cancel = true;
-                error.Text = problem;
-                error.Visibility = Visibility.Visible;
+                string? problem = null;
+                if (name.Text.Trim().Length == 0) problem = "Give the key a name.";
+                else if (isNew && value.Text.Length == 0) problem = "Paste the key value.";
+                if (problem != null)
+                {
+                    a.Cancel = true;
+                    error.Text = problem;
+                    error.Visibility = Visibility.Visible;
+                }
+            };
+            dlg.Opened += (_, _) => name.Focus(FocusState.Programmatic);
+
+            var res = await dlg.ShowAsync();
+
+            draft.Name = name.Text; draft.Service = service.Text; draft.Tags = tags.Text; draft.Value = value.Text;
+            draft.Notes = notes.Text; draft.Expires = expires.Date; draft.Favorite = fav.IsChecked == true;
+
+            if (more)
+            {
+                var picked = await PickIconAsync(draft.Icon);
+                if (picked != null) draft.Icon = picked;
+                continue;
             }
-        };
-        dlg.Opened += (_, _) => name.Focus(FocusState.Programmatic);
+            if (res == ContentDialogResult.Secondary && existing != null) return new EditResult(existing, null, true);
+            if (res != ContentDialogResult.Primary) return null;
 
-        var res = await dlg.ShowAsync();
-        if (res == ContentDialogResult.Secondary && existing != null) return new EditResult(existing, null, true);
-        if (res != ContentDialogResult.Primary) return null;
-
-        var entry = existing?.Clone() ?? new KeyEntry();
-        entry.Name = name.Text.Trim();
-        entry.Service = service.Text.Trim();
-        entry.Tags = tags.Text.Split(new[] { ',', ';', '،' }, StringSplitOptions.RemoveEmptyEntries)
-            .Select(t => t.Trim()).Where(t => t.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        entry.Notes = notes.Text.Trim();
-        entry.Favorite = fav.IsChecked == true;
-        entry.Expires = expires.Date?.Date;
-        entry.Icon = selected;
-        return new EditResult(entry, value.Text.Length > 0 ? value.Text : null, false);
+            var entry = existing?.Clone() ?? new KeyEntry();
+            entry.Name = draft.Name.Trim();
+            entry.Service = draft.Service.Trim();
+            entry.Tags = draft.Tags.Split(new[] { ',', ';', '،' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(t => t.Trim()).Where(t => t.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            entry.Notes = draft.Notes.Trim();
+            entry.Favorite = draft.Favorite;
+            entry.Expires = draft.Expires?.Date;
+            entry.Icon = draft.Icon;
+            return new EditResult(entry, draft.Value.Length > 0 ? draft.Value : null, false);
+        }
     }
 
     // ───────────────────────── authentication ─────────────────────────
@@ -781,7 +992,7 @@ public sealed class KeysStorePage : ToolPage
 
         while (true)
         {
-            var pw = new PasswordBox { PlaceholderText = "Master password", MinWidth = 340 };
+            var pw = new PasswordBox { PlaceholderText = "Master password", MinWidth = 340, HorizontalAlignment = HorizontalAlignment.Stretch };
             var err = new TextBlock
             {
                 Text = error, TextWrapping = TextWrapping.Wrap,
@@ -795,11 +1006,11 @@ public sealed class KeysStorePage : ToolPage
                 Spacing = 10,
                 Children =
                 {
-                    new TextBlock { Text = helloReady ? "Use Windows Hello, or type your master password." : "Type your master password.", TextWrapping = TextWrapping.Wrap },
+                    AuthHeader(title, helloReady ? "Use Windows Hello, or type your master password." : "Type your master password."),
                     pw, err,
                 },
             };
-            dlg.SecondaryButtonText = "Password";
+            dlg.SecondaryButtonText = "Unlock";
             dlg.CloseButtonText = "Cancel";
             if (helloReady)
             {
@@ -840,8 +1051,8 @@ public sealed class KeysStorePage : ToolPage
 
     private async Task<bool> CreateVaultAsync()
     {
-        var p1 = new PasswordBox { Header = "Master password (at least 8 characters)", MinWidth = 340 };
-        var p2 = new PasswordBox { Header = "Repeat the password", MinWidth = 340 };
+        var p1 = new PasswordBox { Header = "Master password (at least 8 characters)", MinWidth = 340, HorizontalAlignment = HorizontalAlignment.Stretch };
+        var p2 = new PasswordBox { Header = "Repeat the password", MinWidth = 340, HorizontalAlignment = HorizontalAlignment.Stretch };
         var err = new TextBlock { Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
         var dlg = NewDialog();
         dlg.Title = "Create your Keys Store";
@@ -853,11 +1064,8 @@ public sealed class KeysStorePage : ToolPage
             Spacing = 10,
             Children =
             {
-                new TextBlock
-                {
-                    Text = "This password protects all your other keys. It cannot be recovered — if you forget it, the keys are gone.",
-                    TextWrapping = TextWrapping.Wrap,
-                },
+                AuthHeader("Create your master password",
+                    "This password protects all your other keys. It cannot be recovered — if you forget it, the keys are gone."),
                 p1, p2, err,
             },
         };
