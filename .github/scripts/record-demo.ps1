@@ -1,7 +1,7 @@
 <#
   record-demo.ps1
   Records the desktop to an MP4 (ffmpeg + gdigrab) while launching ASD.exe and clicking
-  ONLY through the Keys Store page (create the vault, add keys, favorite, quick copy, search/filter, open, edit, export a backup, delete keys, add a key, import the backup, lock/unlock) with REAL mouse clicks (so the cursor and the clicks are visible in the video).
+  ONLY through the Keys Store page (create the vault, add keys, favorite, quick copy, search/filter, open, edit, export a backup, delete keys, add a key, import the backup, lock/unlock, then the notification bell with a local test server) with REAL mouse clicks (so the cursor and the clicks are visible in the video).
   Elements are located with Windows UI Automation (by their visible text), never by fixed pixels.
 
   Usage (from the workflow):
@@ -537,6 +537,26 @@ try {
         }
     } else { Log 'no backup file, so the import step is skipped' }
 
+    # 9b) IMPORT keys from pasted .env text (Security -> Import from .env or JSON)
+    if (Click-Named 'Security' 600) {
+        if (Wait-AnyName @('Import from .env or JSON') 10) {
+            Start-Sleep -Milliseconds 700
+            [void](Click-Named 'Import from .env or JSON' 700)
+            if (Wait-AnyName @('Choose file...', 'Import') 15) {
+                Start-Sleep -Milliseconds 500
+                Fill-Field 'Paste .env lines or JSON' ''
+                Type-Text 'DEMO_OPENAI_KEY=sk-demo-0006'; Press-Keys '{ENTER}' 200
+                Type-Text '# a comment line is ignored'; Press-Keys '{ENTER}' 200
+                Type-Text 'DEMO_SENDGRID_KEY="SG.demo-0007"'; Press-Keys '{ENTER}' 600
+                [void](Click-Named 'Import' 1200)
+                Start-Sleep -Milliseconds 800
+                foreach ($k in 'DEMO_OPENAI_KEY', 'DEMO_SENDGRID_KEY') {
+                    if (Find-Element $k) { Log "OK: '$k' was imported" } else { Log "PROBLEM: '$k' is missing after the .env import" }
+                }
+            } else { Log 'the .env import dialog did not appear'; Dump-Names 'env import' }
+        }
+    }
+
     # 10) lock from Security, then open a key again: the unlock dialog asks for the master password
     if (Click-Named 'Security' 600) {
         if (Wait-AnyName @('Lock now') 10) {
@@ -562,6 +582,95 @@ try {
         [void](Click-Named 'Close' 500)
     }
 
+    # 11) NOTIFICATIONS: the bell, its dialog, the cards, and the Windows notification when ASD is not the active window.
+    #     A tiny local web server (a background job) gives a request and a download that each take about 4 seconds.
+    Log 'notifications test: starting the local test server'
+    $port = 18765
+    $notesLog = Join-Path $env:LOCALAPPDATA 'ASD\notifications.log'
+    $script:serverJob = Start-Job -ArgumentList $port -ScriptBlock {
+        param($port)
+        $l = New-Object System.Net.HttpListener
+        $l.Prefixes.Add("http://localhost:$port/")
+        $l.Start()
+        while ($l.IsListening) {
+            $ctx = $l.GetContext()
+            try {
+                $path = $ctx.Request.Url.AbsolutePath
+                if ($path -eq '/delay') {
+                    Start-Sleep -Seconds 4
+                    $bytes = [Text.Encoding]::UTF8.GetBytes('{"ok":true}')
+                    $ctx.Response.ContentType = 'application/json'
+                    $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+                } elseif ($path -eq '/file') {
+                    $chunk = New-Object byte[] 65536
+                    $ctx.Response.ContentLength64 = 16 * 65536
+                    $ctx.Response.ContentType = 'application/octet-stream'
+                    $ctx.Response.AddHeader('Content-Disposition', 'attachment; filename="demo-download.bin"')
+                    if ($ctx.Request.HttpMethod -ne 'HEAD') {
+                        for ($i = 0; $i -lt 16; $i++) {
+                            $ctx.Response.OutputStream.Write($chunk, 0, $chunk.Length)
+                            $ctx.Response.OutputStream.Flush()
+                            Start-Sleep -Milliseconds 300
+                        }
+                    }
+                }
+            } catch { }
+            finally { try { $ctx.Response.Close() } catch { } }
+        }
+    }
+    Start-Sleep -Seconds 2
+
+    function Wait-NotesLog([string]$text, [int]$timeoutSec) {
+        $end = (Get-Date).AddSeconds($timeoutSec)
+        while ((Get-Date) -lt $end) {
+            if ((Test-Path $notesLog) -and (Select-String -Path $notesLog -Pattern $text -SimpleMatch -Quiet)) { return $true }
+            Start-Sleep -Milliseconds 500
+        }
+        return $false
+    }
+
+    # a) HTTP Download from the Toolbox, then leave the page (Keys Store): the notification must still arrive
+    if (Click-Named 'Toolbox' 900) {
+        if (Click-Named 'HTTP Download' 900) {
+            if (Wait-AnyName @('Download links') 10) {
+                Fill-Field 'Download links' "http://localhost:$port/file"
+                [void](Click-Named 'Download' 900)
+                [void](Click-Named 'Keys Store' 700)                 # the person is on another page now
+                if (Wait-NotesLog 'demo-download.bin' 90) { Log 'OK: the download notification was posted' } else { Log 'PROBLEM: no download notification after 90 s' }
+                if (Click-Named 'Notifications' 800) {
+                    if (Wait-AnyName @('demo-download.bin') 10) {
+                        Start-Sleep -Milliseconds 900               # let the list be seen
+                        [void](Click-Named 'demo-download.bin' 1200)   # the card: goes to the tool
+                        if (Wait-AnyName @('Download links') 10) { Log 'OK: the card opened HTTP Download' } else { Log 'PROBLEM: the card did not open HTTP Download' }
+                    } else { Log 'PROBLEM: the card is not in the notifications dialog'; Dump-Names 'notifications' }
+                }
+            } else { Log 'HTTP Download page did not open'; Dump-Names 'http download' }
+        }
+    }
+
+    # b) HTTP Track: a request that takes 4 s while ASD is NOT the active window -> Windows notification
+    if (Click-Named 'Toolbox' 900) {
+        if (Click-Named 'HTTP Track' 900) {
+            if (Wait-AnyName @('Send') 10) {
+                Fill-Field 'Request URL' "http://localhost:$port/delay"
+                [void](Click-Named 'Send' 500)
+                $other = Start-Process notepad -PassThru           # takes the focus away from ASD
+                Start-Sleep -Seconds 1
+                try { [void][Native]::SetForegroundWindow($other.MainWindowHandle) } catch { }
+                if (Wait-NotesLog 'localhost' 40) { Log 'OK: the request notification was posted' } else { Log 'PROBLEM: no request notification after 40 s' }
+                Start-Sleep -Seconds 1
+                if (Test-Path $notesLog) { Get-Content $notesLog | ForEach-Object { Log "notifications.log: $_" } }
+                try { Stop-Process -Id $other.Id -Force -ErrorAction SilentlyContinue } catch { }
+                if ($script:proc.MainWindowHandle -ne [IntPtr]::Zero) { [void][Native]::SetForegroundWindow($script:proc.MainWindowHandle) }
+                Start-Sleep -Milliseconds 800
+                if (Click-Named 'Notifications' 800) {
+                    if (Wait-AnyName @('GET localhost') 10) { Start-Sleep -Milliseconds 900; Log 'OK: the request card is in the list' } else { Log 'PROBLEM: the request card is not in the list'; Dump-Names 'notifications' }
+                    [void](Click-Named 'Close' 600)
+                }
+            }
+        }
+    }
+
     Log 'scenario finished'
 }
 catch {
@@ -569,6 +678,7 @@ catch {
 }
 finally {
     Stop-Recording
+    if ($script:serverJob) { Stop-Job $script:serverJob -ErrorAction SilentlyContinue; Remove-Job $script:serverJob -Force -ErrorAction SilentlyContinue }
     if ($script:proc -and -not $script:proc.HasExited) { Stop-Process -Id $script:proc.Id -Force -ErrorAction SilentlyContinue }
     Get-Process -Name ASD -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue   # also a restarted copy
 }

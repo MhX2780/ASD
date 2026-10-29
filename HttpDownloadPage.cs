@@ -1,4 +1,5 @@
 using Microsoft.UI.Text;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -27,6 +28,7 @@ public sealed class HttpDownloadPage : ToolPage
     {
         _urls = Input("urls", "Download link(s) — one per line", 80, "https://example.com/big-file.zip");
         _headers = Input("headers", "Extra headers (optional — Authorization, Cookie …)", 70, "Authorization: Bearer …", persist: false);
+        AutomationProperties.SetName(_urls, "Download links");
         _folder = Input("folder", "Save to folder", placeholder: DefaultFolder, multiline: false);
         _fileName = Input("fname", "File name (optional, single link only)", placeholder: "taken from the server / URL", persist: false, multiline: false);
         _sha = Input("sha", "Expected SHA-256 (optional, single link only)", persist: false, multiline: false);

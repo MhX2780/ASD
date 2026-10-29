@@ -1161,6 +1161,7 @@ public sealed class KeysStorePage : ToolPage
         var exportBtn = Btn("Export backup", () => { next = ExportAsync; dlg.Hide(); });
         exportBtn.IsEnabled = exists;
         var importBtn = Btn("Import backup", () => { next = ImportAsync; dlg.Hide(); });
+        var importTextBtn = Btn("Import from .env or JSON", () => { next = ImportTextAsync; dlg.Hide(); });
 
         var minutes = new[] { 1, 5, 15, 30, 60 };
         var auto = Combo(minutes.Select(m => m == 1 ? "1 minute" : $"{m} minutes").ToArray());
@@ -1194,10 +1195,12 @@ public sealed class KeysStorePage : ToolPage
                     new TextBlock { Text = "Backup", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 6, 0, 0) },
                     new TextBlock { Text = "A backup is the encrypted vault in one file. Keep it together with your master password: you need both to restore it.", Opacity = 0.7, FontSize = 12, TextWrapping = TextWrapping.Wrap },
                     Row(exportBtn, importBtn),
+                    importTextBtn,
                     new TextBlock
                     {
                         Text = "Values are encrypted with AES-256-GCM; the key is derived from your master password (PBKDF2, 600 000 rounds) and is never written to disk. "
-                             + "Names, services and tags are stored unencrypted so the cards can be searched while locked.",
+                             + "Names, services and tags are stored unencrypted so the cards can be searched while locked. "
+                             + "The vault also locks by itself when Windows locks or goes to sleep.",
                         Opacity = 0.65, FontSize = 12, TextWrapping = TextWrapping.Wrap,
                     },
                 },
@@ -1358,6 +1361,122 @@ public sealed class KeysStorePage : ToolPage
             RebuildCards();
         if (outcome is { } r2)
             Status.Text = $"Imported {r2.Added} key{(r2.Added == 1 ? "" : "s")}; {r2.Skipped} already existed or could not be read.";
+    }
+
+    // ───────────────────────── import from .env / JSON ─────────────────────────
+    private async Task ImportTextAsync()
+    {
+        Status.Text = "";
+        if (!KeyVault.IsUnlocked)
+        {
+            if (!await AuthenticateAsync("Unlock to import keys")) { ShowList(); return; }
+            ShowList();
+        }
+
+        var text = "";
+        while (true)      // loops again after "Choose file …" so the text is kept
+        {
+            var existing = KeyVault.All().Select(KeyRefs.RefOf).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var fresh = new List<ImportItem>();
+
+            var box = new TextBox
+            {
+                Header = "Paste .env lines or JSON", Text = text, AcceptsReturn = true, Height = 200, IsSpellCheckEnabled = false,
+                TextWrapping = TextWrapping.NoWrap, FontFamily = new FontFamily("Consolas"),
+            };
+            ScrollViewer.SetVerticalScrollBarVisibility(box, ScrollBarVisibility.Auto);
+            ScrollViewer.SetHorizontalScrollBarVisibility(box, ScrollBarVisibility.Auto);
+            var summary = new TextBlock { TextWrapping = TextWrapping.Wrap, Opacity = 0.85 };
+
+            var pickFile = false;
+            var dlg = NewDialog();
+            dlg.Title = "Import keys from .env or JSON";
+            dlg.PrimaryButtonText = "Import";
+            dlg.SecondaryButtonText = "Choose file…";
+            dlg.CloseButtonText = "Cancel";
+            dlg.DefaultButton = ContentDialogButton.Primary;
+            dlg.Content = new StackPanel
+            {
+                Spacing = 10, Width = 480,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Lines like NAME=value (a .env file), or JSON like {\"NAME\": \"value\"}. Each name becomes a key, with the name as its string value. "
+                             + "Names that already exist are skipped. Delete the source file afterwards.",
+                        TextWrapping = TextWrapping.Wrap, Opacity = 0.75, FontSize = 12,
+                    },
+                    box, summary,
+                },
+            };
+
+            void Refresh()
+            {
+                fresh.Clear();
+                try
+                {
+                    var seen = new HashSet<string>(existing, StringComparer.OrdinalIgnoreCase);
+                    var skipped = 0;
+                    foreach (var item in KeyImport.Parse(box.Text))
+                    {
+                        var reference = KeyRefs.Slug(item.Name);
+                        if (reference.Length == 0 || !seen.Add(reference)) { skipped++; continue; }
+                        fresh.Add(item);
+                    }
+                    if (box.Text.Trim().Length == 0) summary.Text = "";
+                    else if (fresh.Count == 0 && skipped == 0) summary.Text = "No keys found. Use lines like NAME=value.";
+                    else
+                    {
+                        var names = string.Join(", ", fresh.Take(6).Select(i => i.Name)) + (fresh.Count > 6 ? ", …" : "");
+                        summary.Text = $"{fresh.Count} new key{(fresh.Count == 1 ? "" : "s")}" + (fresh.Count > 0 ? ": " + names : "")
+                                     + (skipped > 0 ? $"   ·   {skipped} skipped (already exist or repeated)" : "");
+                    }
+                }
+                catch (Exception ex) { summary.Text = "Cannot read this text: " + ex.Message; }
+                dlg.IsPrimaryButtonEnabled = fresh.Count > 0;
+            }
+            box.TextChanged += (_, _) => Refresh();
+            Refresh();
+
+            dlg.SecondaryButtonClick += (_, _) => pickFile = true;
+            dlg.Opened += (_, _) => box.Focus(FocusState.Programmatic);
+
+            var res = await dlg.ShowAsync();
+            text = box.Text;
+
+            if (pickFile)
+            {
+                try
+                {
+                    var picker = new Windows.Storage.Pickers.FileOpenPicker();
+                    picker.FileTypeFilter.Add("*");
+                    WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindow));
+                    var file = await picker.PickSingleFileAsync();
+                    if (file != null)
+                    {
+                        var info = await file.GetBasicPropertiesAsync();
+                        if (info.Size > 1_000_000) Status.Text = "That file is too big to be a key list.";
+                        else text = await Windows.Storage.FileIO.ReadTextAsync(file);
+                    }
+                }
+                catch (Exception ex) { Status.Text = "Could not read the file: " + ex.Message; }
+                continue;
+            }
+            if (res != ContentDialogResult.Primary || fresh.Count == 0) return;
+
+            foreach (var item in fresh)
+            {
+                var entry = new KeyEntry
+                {
+                    Name = item.Name, Ref = KeyRefs.Slug(item.Name), Service = item.Service, Notes = item.Notes,
+                    Tags = new List<string> { "imported" },
+                };
+                KeyVault.Upsert(entry, item.Value);
+            }
+            RebuildCards();
+            Status.Text = $"Imported {fresh.Count} key{(fresh.Count == 1 ? "" : "s")}.";
+            return;
+        }
     }
 
     // ───────────────────────── clipboard ─────────────────────────

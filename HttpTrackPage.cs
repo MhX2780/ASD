@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -19,6 +21,8 @@ public sealed class HttpTrackPage : ToolPage
     private readonly ConcurrentQueue<string> _queue = new();
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     private CancellationTokenSource? _cts;
+    private static readonly Regex StatusLine = new(@"HTTP/\S+\s+(\d{3})\b", RegexOptions.Compiled);
+    private static readonly Regex ErrorLine = new(@"^\[\s*[\d.]+ ms\]\s+ERROR\b", RegexOptions.Compiled);
     private TextBox? _lastField;      // where "Insert key…" puts the placeholder
 
     public HttpTrackPage() : base("httptrack", "HTTP Track",
@@ -30,6 +34,7 @@ public sealed class HttpTrackPage : ToolPage
 
         _url = Input("url", "", placeholder: "https://example.com/api/items", multiline: false);
         _url.HorizontalAlignment = HorizontalAlignment.Stretch;
+        AutomationProperties.SetName(_url, "Request URL");
         _headers = Input("headers", "Headers (Name: value, one per line)", 110, "Accept: application/json", persist: false);
         _body = Input("body", "Body (optional)", 110, persist: false);
         _curl = Input("curl", "Paste a cURL command to fill everything in", 70, "curl -X POST https://… -H 'Content-Type: application/json' -d '{…}'", persist: false);
@@ -183,8 +188,27 @@ public sealed class HttpTrackPage : ToolPage
             Status.Text = "Running…";
 
             var token = _cts.Token;
-            await Task.Run(() => HttpTracker.RunAsync(opt, line => _queue.Enqueue(mask == null ? line : mask(line)), token));
+            var clock = Stopwatch.StartNew();
+            string? lastStatus = null;
+            var failed = false;
+            await Task.Run(() => HttpTracker.RunAsync(opt, line =>
+            {
+                var m = StatusLine.Match(line);
+                if (m.Success) lastStatus = m.Groups[1].Value;
+                if (ErrorLine.IsMatch(line)) failed = true;
+                _queue.Enqueue(mask == null ? line : mask(line));
+            }, token));
             Status.Text = "Finished.";
+
+            // a request that took 3 s or more: tell the person when it is done, wherever they are
+            if (clock.Elapsed.TotalSeconds >= 3 && !token.IsCancellationRequested)
+            {
+                var host = Uri.TryCreate(opt.Url.Contains("://") ? opt.Url : "https://" + opt.Url, UriKind.Absolute, out var u) ? u.Host : "request";
+                var code = int.TryParse(lastStatus, out var c) ? c : 0;
+                var kind = failed || code == 0 ? NoteKind.Error : code >= 500 ? NoteKind.Error : code >= 400 ? NoteKind.Warning : NoteKind.Success;
+                Notifier.Post(kind, $"{opt.Method} {host}",
+                    $"HTTP Track · {(code == 0 ? "no reply" : lastStatus)} · {clock.Elapsed.TotalSeconds:0.0} s", "httptrack");
+            }
         }
         catch (Exception ex) { Fail(ex); }
         finally

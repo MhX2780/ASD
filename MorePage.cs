@@ -1,5 +1,6 @@
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 
@@ -72,6 +73,7 @@ public sealed class MorePage : ToolPage
             Padding = new Thickness(14),
             Margin = new Thickness(4),
         };
+        AutomationProperties.SetName(main, t.Title);
         main.Click += (_, _) => (App.MainWindow as MainWindow)?.OpenTool(t.Tag);
 
         var star = new Button

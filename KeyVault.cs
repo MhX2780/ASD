@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Microsoft.Win32;
 using System.Text.Json;
 using Windows.Security.Credentials;
 
@@ -426,8 +427,28 @@ internal static class KeyVault
 
     private static byte[] RequireDek() => _dek ?? throw new InvalidOperationException("The vault is locked.");
 
+    private static bool _watchingSession;
+
+    /// <summary>Locks the vault when Windows locks, signs out, disconnects or goes to sleep (set up once, on first unlock).</summary>
+    private static void WatchSession()
+    {
+        if (_watchingSession) return;
+        _watchingSession = true;
+        try
+        {
+            SystemEvents.SessionSwitch += (_, e) =>
+            {
+                if (e.Reason is SessionSwitchReason.SessionLock or SessionSwitchReason.SessionLogoff
+                    or SessionSwitchReason.ConsoleDisconnect or SessionSwitchReason.RemoteDisconnect) Lock();
+            };
+            SystemEvents.PowerModeChanged += (_, e) => { if (e.Mode == PowerModes.Suspend) Lock(); };
+        }
+        catch { /* the idle timer still protects the vault */ }
+    }
+
     private static void SetDek(byte[] dek)
     {
+        WatchSession();
         if (_dek != null) CryptographicOperations.ZeroMemory(_dek);
         _dek = dek;
         _lastUse = DateTime.UtcNow;

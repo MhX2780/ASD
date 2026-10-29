@@ -1,4 +1,5 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml.Input;
@@ -58,9 +59,11 @@ public sealed partial class MainWindow : Window
         openBtn.Click += OnClipOpen;
         ClipBar.ActionButton = openBtn;
         this.Activated += OnWindowActivated;
+        this.Activated += (_, a) => Notifier.WindowActive = a.WindowActivationState != WindowActivationState.Deactivated;
+        Notifier.Changed += UpdateBell;
 
         // Save the inputs of the visible tool when the window closes
-        this.Closed += (_, _) => (ContentHost.Content as ToolPage)?.Deactivate();
+        this.Closed += (_, _) => { (ContentHost.Content as ToolPage)?.Deactivate(); Notifier.Shutdown(); };
     }
 
     public void ApplyTheme(string mode)
@@ -106,6 +109,7 @@ public sealed partial class MainWindow : Window
         CursorHelper.ApplyHandCursorToNavItems(RootNav);
         _splash = PlaySplashAsync();
         _ = CheckForUpdateOnStartupAsync();
+        Notifier.Init(DispatcherQueue, tag => OpenTool(tag), BringToFront, () => _current?.Tag);
     }
 
     private void RootNav_ItemInvoked(NavigationView sender, NavigationViewItemInvokedEventArgs args)
@@ -234,6 +238,108 @@ public sealed partial class MainWindow : Window
             .OfType<NavigationViewItem>()
             .FirstOrDefault(i => i.Tag as string == navTag);
         if (item != null) RootNav.SelectedItem = item;
+    }
+
+    // ───────── notifications (bell in the title bar) ─────────
+    private bool _notesOpen;
+
+    private void UpdateBell()
+    {
+        var unread = Notifier.Unread;
+        BellBadge.Visibility = unread > 0 ? Visibility.Visible : Visibility.Collapsed;
+        BellBadge.Value = Math.Min(unread, 99);
+    }
+
+    /// <summary>Restores the window if it is minimized and brings it to the front (used when a Windows notification is clicked).</summary>
+    private void BringToFront()
+    {
+        try
+        {
+            if (AppWindow.Presenter is OverlappedPresenter p && p.State == OverlappedPresenterState.Minimized) p.Restore();
+        }
+        catch { /* cosmetic */ }
+        Activate();
+    }
+
+    private async void Bell_Click(object sender, RoutedEventArgs e) => await ShowNotificationsAsync();
+
+    private async Task ShowNotificationsAsync()
+    {
+        if (_notesOpen) return;
+        _notesOpen = true;
+        try
+        {
+            Notifier.MarkRead();
+            ContentDialog? dlg = null;
+            var host = new StackPanel { Spacing = 6, MinWidth = 420 };
+            if (Notifier.Items.Count == 0)
+                host.Children.Add(new TextBlock
+                {
+                    Text = "No notifications yet. Finished downloads and slow requests will appear here.",
+                    Opacity = 0.7, TextWrapping = TextWrapping.Wrap,
+                });
+            foreach (var n in Notifier.Items) host.Children.Add(NoteCard(n, () => dlg?.Hide()));
+            CursorHelper.ApplyHandCursorToButtons(host);
+
+            dlg = new ContentDialog
+            {
+                XamlRoot = RootGrid.XamlRoot,
+                RequestedTheme = RootGrid.ActualTheme,        // the app's theme setting, not Windows'
+                Title = "Notifications",
+                CloseButtonText = "Close",
+                SecondaryButtonText = "Clear all",
+                IsSecondaryButtonEnabled = Notifier.Items.Count > 0,
+                DefaultButton = ContentDialogButton.Close,
+                Content = new ScrollViewer { MaxHeight = 420, Content = host },
+            };
+            if (await dlg.ShowAsync() == ContentDialogResult.Secondary) Notifier.Clear();
+        }
+        catch (Exception) { /* another dialog was open: nothing to show */ }
+        finally { _notesOpen = false; }
+    }
+
+    /// <summary>A card: status icon, title with a smaller line under it, and an arrow on the right. Click = go to the tool.</summary>
+    private UIElement NoteCard(NoteItem n, Action closeDialog)
+    {
+        var glyph = n.Kind switch
+        {
+            NoteKind.Success => "\uE73E",
+            NoteKind.Error => "\uE711",
+            NoteKind.Warning => "\uE7BA",
+            _ => "\uE946",
+        };
+        var grid = new Grid { ColumnSpacing = 12 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var icon = new FontIcon { Glyph = glyph, FontSize = 18, VerticalAlignment = VerticalAlignment.Center };
+        var text = new StackPanel
+        {
+            Spacing = 2, VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                new TextBlock { Text = n.Title, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis },
+                new TextBlock { Text = n.Subtitle, FontSize = 12, Opacity = 0.7, TextWrapping = TextWrapping.Wrap },
+            },
+        };
+        var arrow = new FontIcon { Glyph = "\uE76C", FontSize = 12, Opacity = 0.6, VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumn(text, 1);
+        Grid.SetColumn(arrow, 2);
+        grid.Children.Add(icon);
+        grid.Children.Add(text);
+        grid.Children.Add(arrow);
+
+        var card = new Button
+        {
+            Content = grid,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(14, 10, 14, 10),
+        };
+        AutomationProperties.SetName(card, n.Title);
+        card.Click += (_, _) => { closeDialog(); OpenTool(n.Tool); };
+        return card;
     }
 
     // ───────── clipboard banner ─────────

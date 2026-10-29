@@ -109,6 +109,13 @@ public sealed class HttpDownloadJob
 
     private void Note(string text) => LastEvent = text;
 
+    /// <summary>The file name for a notification title (the host when the name is not known yet).</summary>
+    private string NoteName()
+    {
+        if (FileName.Length > 0) return FileName;
+        return Uri.TryCreate(Opt.Url, UriKind.Absolute, out var u) ? u.Host : "Download";
+    }
+
     // ───────── control ─────────
 
     public void Start()
@@ -216,6 +223,8 @@ public sealed class HttpDownloadJob
             Phase = "Done";
             Note($"Saved to {DestPath}");
             Release();
+            Notifier.Post(NoteKind.Success, NoteName(),
+                $"Download complete · {SizeFmt.Bytes(TotalSize > 0 ? TotalSize : Downloaded)} · {SizeFmt.Duration(Elapsed)} · average {SizeFmt.Speed(AvgSpeed)}", "httpdl");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -229,6 +238,7 @@ public sealed class HttpDownloadJob
             Phase = "Failed";
             Note("Failed: " + ex.Message);
             SaveState();
+            Notifier.Post(NoteKind.Error, NoteName(), "Download failed · " + (Opt.Mask?.Invoke(ex.Message) ?? ex.Message), "httpdl");
         }
         finally
         {
