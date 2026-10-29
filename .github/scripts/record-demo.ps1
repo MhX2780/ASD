@@ -1,7 +1,7 @@
 <#
   record-demo.ps1
   Records the desktop to an MP4 (ffmpeg + gdigrab) while launching ASD.exe and clicking
-  ONLY through the Keys Store page (create the vault, add keys, favorite, quick copy, search/filter, open, edit, export a backup, delete keys, add a key, import the backup, lock/unlock, then the notification bell with a local test server) with REAL mouse clicks (so the cursor and the clicks are visible in the video).
+  Scenario 'notifications' (default): download + notifications only. Scenario 'keys': ONLY through the Keys Store page (create the vault, add keys, favorite, quick copy, search/filter, open, edit, export a backup, delete keys, add a key, import the backup, lock/unlock, then the notification bell with a local test server) with REAL mouse clicks (so the cursor and the clicks are visible in the video).
   Elements are located with Windows UI Automation (by their visible text), never by fixed pixels.
 
   Usage (from the workflow):
@@ -15,6 +15,7 @@ param(
     [Parameter(Mandatory)] [string] $OutFile,
     [string] $LogFile = (Join-Path $env:RUNNER_TEMP 'record-demo-log.txt'),
     [int] $Fps = 60,   # the runner display is 60 Hz, so more than 60 adds nothing
+    [ValidateSet('notifications','keys','all')] [string] $Scenario = 'notifications',   # notifications = bell + local test server only; keys = Keys Store tour; all = both
     [double] $PauseScale = 0.4,   # 1 = slow (old speed), 0.4 = fast. Scales every wait after a click
     [string] $UpdateInfoUrl = 'https://github.com/MhX2780/ASD/releases/download/latest/update.txt',   # same URL the app checks
     [ValidateSet('light','dark','auto')] [string] $AppTheme = 'light',   # the app's own theme setting at start (the video starts in this theme)
@@ -477,6 +478,7 @@ try {
         $toggle = Find-PaneToggle
         if ($toggle) { Click-Toggle $toggle 1000 } else { Log 'pane toggle button not found (see the title-bar button list above)' }
     }
+    if ($Scenario -ne 'notifications') {
     [void](Click-Named 'Keys Store' 900)
 
     # 1) four keys, each with its own icon (the first one also creates the vault + master password)
@@ -616,6 +618,9 @@ try {
     }
 
     try {
+    }   # end of the Keys Store tour
+
+    if ($Scenario -ne 'keys') {
     # Whatever happened before: close any dialog that is still open, so this test always starts from a clean page.
     Press-Keys '{ESC}' 400; Press-Keys '{ESC}' 400
 
@@ -624,6 +629,7 @@ try {
     Log 'notifications test: starting the local test server'
     $port = 18765
     $notesLog = Join-Path $env:LOCALAPPDATA 'ASD\notifications.log'
+    Remove-Item $notesLog -Force -ErrorAction SilentlyContinue
     $script:serverJob = Start-Job -ArgumentList $port -ScriptBlock {
         param($port)
         $l = New-Object System.Net.HttpListener
@@ -650,6 +656,11 @@ try {
                             Start-Sleep -Milliseconds 300
                         }
                     }
+                } elseif ($path -eq '/missing') {
+                    Start-Sleep -Seconds 3                  # slow, so the person has left the page when it fails
+                    $ctx.Response.StatusCode = 404
+                } else {
+                    $ctx.Response.StatusCode = 404
                 }
             } catch { }
             finally { try { $ctx.Response.Close() } catch { } }
@@ -666,7 +677,7 @@ try {
         return $false
     }
 
-    # a) HTTP Download from the Toolbox, then leave the page (Keys Store): the notification must still arrive
+    # a) a download that SUCCEEDS: start it from HTTP Download, then leave the page (Keys Store): the notification must still arrive
     if (Click-Named 'Toolbox' 900) {
         if (Click-Named 'HTTP Download' 900) {
             if (Wait-AnyName @('Download links') 10) {
@@ -674,18 +685,33 @@ try {
                 [void](Click-Named 'Download' 900)
                 [void](Click-Named 'Keys Store' 700)                 # the person is on another page now
                 if (Wait-NotesLog 'demo-download.bin' 90) { Log 'OK: the download notification was posted' } else { Log 'PROBLEM: no download notification after 90 s' }
+                Start-Sleep -Milliseconds 800                         # the badge on the bell is visible now
                 if (Click-Named 'Notifications' 800) {
                     if (Wait-AnyName @('demo-download.bin') 10) {
-                        Start-Sleep -Milliseconds 900               # let the list be seen
+                        Start-Sleep -Milliseconds 1200               # let the list be seen
                         [void](Click-Named 'demo-download.bin' 1200)   # the card: goes to the tool
                         if (Wait-AnyName @('Download links') 10) { Log 'OK: the card opened HTTP Download' } else { Log 'PROBLEM: the card did not open HTTP Download' }
                     } else { Log 'PROBLEM: the card is not in the notifications dialog'; Dump-Names 'notifications' }
+                }
+
+                # b) a download that FAILS (the server answers 404): same way, ends in an error notification
+                if (Wait-AnyName @('Download links') 5) {
+                    Fill-Field 'Download links' ''
+                    Press-Keys '^a'; Press-Keys '{DELETE}' 200
+                    Type-Text "http://localhost:$port/missing"
+                    [void](Click-Named 'Download' 900)
+                    [void](Click-Named 'Keys Store' 700)
+                    if (Wait-NotesLog 'Download failed' 60) { Log 'OK: the failed-download notification was posted' } else { Log 'PROBLEM: no failed-download notification after 60 s' }
+                    if (Click-Named 'Notifications' 800) {
+                        Start-Sleep -Milliseconds 1500
+                        [void](Click-Named 'Close' 600)
+                    }
                 }
             } else { Log 'HTTP Download page did not open'; Dump-Names 'http download' }
         }
     }
 
-    # b) HTTP Track: a request that takes 4 s while ASD is NOT the active window -> Windows notification
+    # c) HTTP Track: a request that takes 4 s while ASD is NOT the active window -> Windows notification
     if (Click-Named 'Toolbox' 900) {
         if (Click-Named 'HTTP Track' 900) {
             if (Wait-AnyName @('Send') 10) {
@@ -694,20 +720,31 @@ try {
                 $other = Start-Process notepad -PassThru           # takes the focus away from ASD
                 Start-Sleep -Seconds 1
                 try { [void][Native]::SetForegroundWindow($other.MainWindowHandle) } catch { }
-                if (Wait-NotesLog 'localhost' 40) { Log 'OK: the request notification was posted' } else { Log 'PROBLEM: no request notification after 40 s' }
+                if (Wait-NotesLog 'localhost | HTTP Track' 40) { Log 'OK: the request notification was posted' } else { Log 'PROBLEM: no request notification after 40 s' }
                 Start-Sleep -Seconds 1
-                if (Test-Path $notesLog) { Get-Content $notesLog | ForEach-Object { Log "notifications.log: $_" } }
                 try { Stop-Process -Id $other.Id -Force -ErrorAction SilentlyContinue } catch { }
                 if ($script:proc.MainWindowHandle -ne [IntPtr]::Zero) { [void][Native]::SetForegroundWindow($script:proc.MainWindowHandle) }
                 Start-Sleep -Milliseconds 800
                 if (Click-Named 'Notifications' 800) {
-                    if (Wait-AnyName @('GET localhost') 10) { Start-Sleep -Milliseconds 900; Log 'OK: the request card is in the list' } else { Log 'PROBLEM: the request card is not in the list'; Dump-Names 'notifications' }
-                    [void](Click-Named 'Close' 600)
+                    if (Wait-AnyName @('GET localhost') 10) { Start-Sleep -Milliseconds 1200; Log 'OK: the request card is in the list' } else { Log 'PROBLEM: the request card is not in the list'; Dump-Names 'notifications' }
+                    # d) Clear all empties the list
+                    if (Click-Named 'Clear all' 800) {
+                        if (Click-Named 'Notifications' 800) {
+                            if (Wait-AnyName @('No notifications yet. Finished downloads and slow requests will appear here.') 5) { Log 'OK: Clear all emptied the list' } else { Log 'PROBLEM: the list was not empty after Clear all' }
+                            Start-Sleep -Milliseconds 800
+                            [void](Click-Named 'Close' 600)
+                        }
+                    } else { [void](Click-Named 'Close' 600) }
                 }
             }
         }
     }
+
+    # what the app itself wrote about the notifications (did Windows show them?)
+    if (Test-Path $notesLog) { Get-Content $notesLog | ForEach-Object { Log "notifications.log: $_" } } else { Log 'PROBLEM: notifications.log does not exist' }
     } catch { Log "ERROR in the notifications test: $($_.Exception.Message)" }
+
+    }   # end of the notifications test
 
     Log 'scenario finished'
 }
