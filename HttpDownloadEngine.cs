@@ -18,6 +18,11 @@ public sealed class HttpDownloadOptions
     public List<(string Name, string Value)> Headers = new();
     public bool Resume = true, Overwrite, Insecure;
     public string? Sha256;
+
+    // {{key:Name}} references. Url / Headers keep the placeholders (they are shown and saved in the resume file);
+    // the real values are only put in when a request is built, and are hidden again in everything shown to the person.
+    internal KeyRefSet? Keys;
+    internal Func<string, string>? Mask;
 }
 
 /// <summary>One byte range of the file, downloaded by one connection.</summary>
@@ -258,12 +263,14 @@ public sealed class HttpDownloadJob
 
     private HttpRequestMessage NewRequest(HttpMethod method, string url)
     {
-        var req = new HttpRequestMessage(method, url);
-        foreach (var (name, value) in Opt.Headers)
+        string Real(string text) => Opt.Keys == null ? text : KeyRefs.Replace(text, Opt.Keys);
+        var req = new HttpRequestMessage(method, Real(url));
+        foreach (var (rawName, rawValue) in Opt.Headers)
         {
+            var name = Real(rawName);
             if (name.Equals("Range", StringComparison.OrdinalIgnoreCase)) continue;
             req.Headers.Remove(name);
-            req.Headers.TryAddWithoutValidation(name, value);
+            req.Headers.TryAddWithoutValidation(name, Real(rawValue));
         }
         return req;
     }

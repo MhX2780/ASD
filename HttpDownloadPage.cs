@@ -16,6 +16,8 @@ public sealed class HttpDownloadPage : ToolPage
     private readonly StackPanel _jobsHost = new() { Spacing = 10 };
     private readonly List<JobCard> _cards = new();
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private TextBox? _lastField;      // where "Insert key…" puts the placeholder
+    private bool _starting;           // the unlock dialog is open: ignore a second click on Download
 
     private static string DefaultFolder
         => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
@@ -28,6 +30,10 @@ public sealed class HttpDownloadPage : ToolPage
         _folder = Input("folder", "Save to folder", placeholder: DefaultFolder, multiline: false);
         _fileName = Input("fname", "File name (optional, single link only)", placeholder: "taken from the server / URL", persist: false, multiline: false);
         _sha = Input("sha", "Expected SHA-256 (optional, single link only)", persist: false, multiline: false);
+
+        _lastField = _urls;
+        _urls.GotFocus += (_, _) => _lastField = _urls;
+        _headers.GotFocus += (_, _) => _lastField = _headers;
 
         _conn = Combo("1", "2", "4", "8", "16");
         _conn.SelectedIndex = 3;
@@ -44,11 +50,13 @@ public sealed class HttpDownloadPage : ToolPage
 
         Body.Children.Add(_urls);
         Body.Children.Add(TwoCols(_headers, new StackPanel { Spacing = 12, Children = { _fileName, _sha } }));
+        Body.Children.Add(KeyRefs.InsertButton(() => _lastField ?? _urls));
+        Body.Children.Add(KeyRefs.HintText());
         Body.Children.Add(Grid2(_folder, Btn("Browse…", () => _ = BrowseAsync())));
         Body.Children.Add(Row(Label("Chunks (connections):"), _conn, Label("Speed limit:"), _limit));
         Body.Children.Add(Row(_resume, _overwrite, _insecure));
         Body.Children.Add(Row(
-            Btn("Download", StartDownloads, true),
+            Btn("Download", () => _ = StartDownloadsAsync(), true),
             Btn("Clear finished", ClearFinished),
             Btn("Open folder", OpenFolder)));
         Body.Children.Add(new TextBlock { Text = "Downloads", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
@@ -108,7 +116,16 @@ public sealed class HttpDownloadPage : ToolPage
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{f}\"") { UseShellExecute = true });
     }
 
-    private void StartDownloads()
+    private async Task StartDownloadsAsync()
+    {
+        if (_starting) return;
+        _starting = true;
+        try { await StartDownloadsCoreAsync(); }
+        catch (Exception ex) { Fail(ex); }
+        finally { _starting = false; }
+    }
+
+    private async Task StartDownloadsCoreAsync()
     {
         var urls = _urls.Text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                              .Select(u => u.Contains("://") ? u : "https://" + u)
@@ -126,6 +143,24 @@ public sealed class HttpDownloadPage : ToolPage
             headers.Add((line[..i].Trim(), line[(i + 1)..].Trim()));
         }
 
+        // {{key:Name}}: the values come from the Keys Store, after the master password. Only the placeholders stay in the job.
+        KeyRefSet? keys = null;
+        Func<string, string>? mask = null;
+        var names = KeyRefs.Names(string.Join("\n", urls), string.Join("\n", headers.Select(h => h.Item1 + ": " + h.Item2)));
+        if (names.Count > 0)
+        {
+            if (!KeyVault.Exists)
+            {
+                Status.Text = "These downloads use {{key:…}}, but there is no Keys Store yet. Create it from the Keys Store page first.";
+                return;
+            }
+            var why = "These downloads use " + (names.Count == 1 ? "a key" : $"{names.Count} keys") + " from the Keys Store (" + string.Join(", ", names) + "). Unlock it to start.";
+            if (!await KeyUnlock.EnsureAsync(this, why)) { Status.Text = "Not started: the Keys Store stayed locked."; return; }
+            keys = KeyRefs.Resolve(names);
+            if (keys.Missing.Count > 0) { Status.Text = "No key named: " + string.Join(", ", keys.Missing) + "."; return; }
+            mask = KeyRefs.Masker(keys);
+        }
+
         var single = urls.Count == 1;
         foreach (var url in urls)
         {
@@ -141,6 +176,8 @@ public sealed class HttpDownloadPage : ToolPage
                 Overwrite = Is(_overwrite),
                 Insecure = Is(_insecure),
                 Sha256 = single && _sha.Text.Trim().Length > 0 ? _sha.Text.Trim() : null,
+                Keys = keys,
+                Mask = mask,
             };
             var job = HttpDownloads.Add(o);
             AddCard(job);
@@ -151,11 +188,31 @@ public sealed class HttpDownloadPage : ToolPage
 
     private void AddCard(HttpDownloadJob job)
     {
-        var card = new JobCard(job, RemoveCard);
+        var card = new JobCard(job, RemoveCard, PrepareKeysAsync);
         _cards.Add(card);
         _jobsHost.Children.Insert(0, card.Root);
         card.Update();
         if (IsLoaded) CursorHelper.ApplyHandCursorToButtons(card.Root);
+    }
+
+    /// <summary>
+    /// Before a download that uses {{key:…}} is resumed or retried: the Keys Store must be unlocked (the password is asked
+    /// again if it locked meanwhile) and the values are read again, so a changed key is picked up.
+    /// </summary>
+    private async Task<bool> PrepareKeysAsync(HttpDownloadJob job)
+    {
+        if (job.Opt.Keys == null) return true;
+        var names = job.Opt.Keys.Values.Keys.ToList();
+        if (!await KeyUnlock.EnsureAsync(this, "This download uses " + string.Join(", ", names) + " from the Keys Store. Unlock it to continue."))
+        {
+            Status.Text = "Not resumed: the Keys Store stayed locked.";
+            return false;
+        }
+        var set = KeyRefs.Resolve(names);
+        if (set.Missing.Count > 0) { Status.Text = "No key named: " + string.Join(", ", set.Missing) + "."; return false; }
+        job.Opt.Keys = set;
+        job.Opt.Mask = KeyRefs.Masker(set);
+        return true;
     }
 
     private void RemoveCard(JobCard card)
@@ -188,12 +245,16 @@ public sealed class HttpDownloadPage : ToolPage
         private readonly List<(ProgressBar Bar, TextBlock Txt)> _rows = new();
         private readonly Button _pause, _cancel, _open, _remove;
 
-        public JobCard(HttpDownloadJob job, Action<JobCard> onRemove)
+        public JobCard(HttpDownloadJob job, Action<JobCard> onRemove, Func<HttpDownloadJob, Task<bool>> prepare)
         {
             Job = job;
 
             _pause = new Button { Content = "Pause" };
-            _pause.Click += (_, _) => { if (Job.IsRunning) Job.Pause(); else Job.Start(); };
+            _pause.Click += async (_, _) =>
+            {
+                if (Job.IsRunning) { Job.Pause(); return; }
+                if (await prepare(Job)) Job.Start();
+            };
             _cancel = new Button { Content = "Cancel" };
             _cancel.Click += (_, _) => Job.Cancel();
             _open = new Button { Content = "Show in folder" };
@@ -273,7 +334,8 @@ public sealed class HttpDownloadPage : ToolPage
             if (j.DestPath.Length > 0) sb.Append($"Saving to   {j.DestPath}");
             _stats.Text = sb.ToString().TrimEnd();
 
-            _event.Text = j.Phase == "Failed" && j.Error != null ? "⚠ " + j.Error : j.LastEvent;
+            var eventText = j.Phase == "Failed" && j.Error != null ? "⚠ " + j.Error : j.LastEvent;
+            _event.Text = j.Opt.Mask?.Invoke(eventText) ?? eventText;
 
             UpdateChunks();
 

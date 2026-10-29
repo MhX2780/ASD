@@ -67,7 +67,7 @@ public static class ToolRegistry
         new("httptrack", "HTTP Track", "Follow a request from send to reply: DNS, TCP, TLS, wire bytes, response, timing", "\uE895", "more",
             "http track trace request response log dns tcp tls ssl redirect headers timing ttfb latency wire debug inspect api key keys store secret", () => new HttpTrackPage()),
         new("httpdl", "HTTP Download", "Chunked parallel downloads with speed, size, ETA, pause and resume", "\uE896", "more",
-            "http download downloader chunk chunks parallel speed resume pause file size eta get wget sha256 idm", () => new HttpDownloadPage()),
+            "http download downloader chunk chunks parallel speed resume pause file size eta get wget sha256 idm key keys store secret", () => new HttpDownloadPage()),
         new("text", "Text Tools", "Case, counters, cleanup", "\uE8FD", "more",
             "text case upper lower count words lines trim", () => new TextToolsPage()),
 
