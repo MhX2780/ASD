@@ -116,6 +116,13 @@ function Click-Here {
     [Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # left up
 }
 
+function Scroll-Up([int]$notches = 3) {
+    for ($i = 0; $i -lt $notches; $i++) {
+        [Native]::mouse_event(0x0800, 0, 0, 120, [UIntPtr]::Zero)    # wheel up
+        Start-Sleep -Milliseconds 120
+    }
+}
+
 function Scroll-Down([int]$notches = 3) {
     for ($i = 0; $i -lt $notches; $i++) {
         [Native]::mouse_event(0x0800, 0, 0, -120, [UIntPtr]::Zero)   # wheel down
@@ -306,6 +313,16 @@ function Find-Field([string]$name) {
 # Clicks INTO a text field so it really has the keyboard focus, then (optionally) types. Never relies on Tab order.
 function Fill-Field([string]$field, [string]$text) {
     $hit = Find-Field $field
+    $tries = 0
+    while (-not $hit -and $tries -lt 4) {
+        # a dialog that is taller than the screen scrolls: its fields are "offscreen" until the wheel brings them in
+        $tries++
+        $b = (Get-AppRoot).Current.BoundingRectangle
+        Move-Mouse ([int]($b.X + $b.Width / 2)) ([int]($b.Y + $b.Height / 2)) 8
+        if ($tries -le 2) { Scroll-Down 3 } else { Scroll-Up 8 }
+        Start-Sleep -Milliseconds 300
+        $hit = Find-Field $field
+    }
     if (-not $hit) {
         Log "FIELD '$field' -> NOT FOUND (typing into whatever has the focus)"
         Dump-Names $field
@@ -324,6 +341,12 @@ function Fill-Field([string]$field, [string]$text) {
 # Chooses the key's icon in the dialog. $icon = a built-in name from the drop-down ('Cloud', 'Payments' ...)
 # or 'more:<search>|<title>' to open "More icons", search for a brand logo and pick it (e.g. 'more:github|GitHub').
 function Pick-Icon([string]$icon) {
+    if (-not (Find-Element 'Icon picker')) {
+        $b = (Get-AppRoot).Current.BoundingRectangle
+        Move-Mouse ([int]($b.X + $b.Width / 2)) ([int]($b.Y + $b.Height / 2)) 8
+        Scroll-Up 10
+        Start-Sleep -Milliseconds 300
+    }
     if (-not (Click-Named 'Icon picker' 500)) { return }
     if (-not $icon.StartsWith('more:')) { [void](Click-Named $icon 500); return }
 
@@ -363,6 +386,12 @@ function Add-Key([string]$name, [string]$service, [string]$tags, [string]$value,
 
     # check the result: the dialog must be gone and the new card must be on the page
     Start-Sleep -Milliseconds 600
+    if (Find-Element 'Save') {
+        Log "PROBLEM: the add dialog is still open after Save for '$name' (a field was empty or invalid). Cancelling it so the next steps can run."
+        Dump-Names "add dialog for $name"
+        [void](Click-Named 'Cancel' 500)
+        Start-Sleep -Milliseconds 400
+    }
     if (Find-Element $name) { Log "OK: key '$name' is on the page" }
     else { Log "PROBLEM: key '$name' is not visible after Save"; Dump-Names "key $name" }
 }
@@ -506,6 +535,7 @@ try {
         }
     }
 
+    try {
     # 7) BACKUP: export the vault to a file (Security -> Export backup -> file dialog)
     $backup = Join-Path $runDir 'demo-backup.asdvault'
     Remove-Item $backup -Force -ErrorAction SilentlyContinue
@@ -536,7 +566,9 @@ try {
             }
         }
     } else { Log 'no backup file, so the import step is skipped' }
+    } catch { Log "ERROR in the backup steps: $($_.Exception.Message)" }
 
+    try {
     # 9b) IMPORT keys from pasted .env text (Security -> Import from .env or JSON)
     if (Click-Named 'Security' 600) {
         if (Wait-AnyName @('Import from .env or JSON') 10) {
@@ -556,6 +588,7 @@ try {
             } else { Log 'the .env import dialog did not appear'; Dump-Names 'env import' }
         }
     }
+    } catch { Log "ERROR in the .env import step: $($_.Exception.Message)" }
 
     # 10) lock from Security, then open a key again: the unlock dialog asks for the master password
     if (Click-Named 'Security' 600) {
@@ -581,6 +614,10 @@ try {
         Start-Sleep -Milliseconds 1200
         [void](Click-Named 'Close' 500)
     }
+
+    try {
+    # Whatever happened before: close any dialog that is still open, so this test always starts from a clean page.
+    Press-Keys '{ESC}' 400; Press-Keys '{ESC}' 400
 
     # 11) NOTIFICATIONS: the bell, its dialog, the cards, and the Windows notification when ASD is not the active window.
     #     A tiny local web server (a background job) gives a request and a download that each take about 4 seconds.
@@ -670,6 +707,7 @@ try {
             }
         }
     }
+    } catch { Log "ERROR in the notifications test: $($_.Exception.Message)" }
 
     Log 'scenario finished'
 }

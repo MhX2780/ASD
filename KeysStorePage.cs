@@ -906,6 +906,20 @@ public sealed class KeysStorePage : ToolPage
         return picked;
     }
 
+    /// <summary>Two fields side by side, so the Add / Edit dialog stays short enough to need no scrolling.</summary>
+    private static Grid Cols(FrameworkElement left, FrameworkElement right)
+    {
+        var g = new Grid { ColumnSpacing = 10 };
+        g.ColumnDefinitions.Add(new ColumnDefinition());
+        g.ColumnDefinitions.Add(new ColumnDefinition());
+        right.VerticalAlignment = VerticalAlignment.Bottom;
+        left.VerticalAlignment = VerticalAlignment.Top;
+        Grid.SetColumn(right, 1);
+        g.Children.Add(left);
+        g.Children.Add(right);
+        return g;
+    }
+
     private async Task<EditResult?> EditDialogAsync(KeyEntry? existing)
     {
         var isNew = existing == null;
@@ -924,13 +938,12 @@ public sealed class KeysStorePage : ToolPage
             var name = new TextBox { Header = "Name", PlaceholderText = "e.g. OpenAI – production", Text = draft.Name };
             var refBox = new TextBox { Header = "String value (optional, no spaces)", PlaceholderText = "e.g. Azure-Key", Text = draft.Ref, IsSpellCheckEnabled = false };
             AutomationProperties.SetName(refBox, "String value");
-            var refHint = new TextBlock { Opacity = 0.7, FontSize = 12, TextWrapping = TextWrapping.Wrap };
             var settingRef = false;
             void UpdateHint()
             {
                 var r = refBox.Text.Trim();
                 if (r.Length == 0) r = KeyRefs.Slug(name.Text);
-                refHint.Text = "Other tools use it as {{key:" + (r.Length > 0 ? r : "…") + "}}";
+                refBox.Description = "Used as {{key:" + (r.Length > 0 ? r : "…") + "}}";
             }
             name.TextChanged += (_, _) =>
             {
@@ -944,11 +957,11 @@ public sealed class KeysStorePage : ToolPage
             var value = new TextBox
             {
                 Header = isNew ? "Value" : "New value (leave empty to keep the current one)",
-                AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 84, IsSpellCheckEnabled = false,
+                AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 72, IsSpellCheckEnabled = false,
                 FontFamily = new FontFamily("Consolas"), Text = draft.Value,
             };
             ScrollViewer.SetVerticalScrollBarVisibility(value, ScrollBarVisibility.Auto);
-            var notes = new TextBox { Header = "Notes", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 64, Text = draft.Notes };
+            var notes = new TextBox { Header = "Notes", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 52, Text = draft.Notes };
             var expires = new CalendarDatePicker { Header = "Expires (optional)", PlaceholderText = "No expiry" };
             if (draft.Expires != null) expires.Date = draft.Expires;
             var fav = new CheckBox { Content = "Favorite", IsChecked = draft.Favorite };
@@ -965,7 +978,7 @@ public sealed class KeysStorePage : ToolPage
             dlg.Content = new ScrollViewer
             {
                 MaxHeight = 540,
-                Content = new StackPanel { Spacing = 10, Width = 460, Children = { icon, name, refBox, refHint, service, tags, value, notes, expires, fav, error } },
+                Content = new StackPanel { Spacing = 8, Width = 500, Children = { icon, Cols(name, refBox), Cols(service, tags), value, notes, Cols(expires, fav), error } },
             };
             if (!isNew) dlg.SecondaryButtonText = "Delete";
 
