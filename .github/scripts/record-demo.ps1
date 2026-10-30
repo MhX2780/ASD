@@ -617,10 +617,10 @@ try {
         [void](Click-Named 'Close' 500)
     }
 
-    try {
     }   # end of the Keys Store tour
 
     if ($Scenario -ne 'keys') {
+    try {
     # Whatever happened before: close any dialog that is still open, so this test always starts from a clean page.
     Press-Keys '{ESC}' 400; Press-Keys '{ESC}' 400
 
