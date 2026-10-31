@@ -57,6 +57,7 @@ public static class Native {
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, int data, UIntPtr extra);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll", CharSet = CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wParam, string lParam, uint flags, uint timeout, out UIntPtr result);
     [DllImport("user32.dll", SetLastError = true)] public static extern bool SystemParametersInfo(uint action, uint param, IntPtr pvParam, uint winIni);
@@ -90,6 +91,55 @@ function Enable-Animations {
     $after = 0
     [void][Native]::SystemParametersInfo(0x1042, 0, [ref]$after, 0)
     Log "client-area animations after: $after"
+}
+
+# Windows decides whether a notification shows as a banner. Write down what it is set to, so a missing banner can be explained.
+function Log-ToastSettings {
+    foreach ($q in @(
+        @{ Key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications'; Name = 'ToastEnabled' },
+        @{ Key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings'; Name = 'NOC_GLOBAL_SETTINGS_ALLOW_TOASTS_ABOVE_LOCK' },
+        @{ Key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings'; Name = 'NOC_GLOBAL_SETTINGS_TOASTS_ENABLED' }
+    )) {
+        $v = $null
+        try { $v = (Get-ItemProperty -Path $q.Key -Name $q.Name -ErrorAction Stop).($q.Name) } catch { }
+        Log ("toast setting {0} = {1}" -f $q.Name, $(if ($null -eq $v) { '(not set)' } else { $v }))
+    }
+    try { Log ("Windows: " + (Get-CimInstance Win32_OperatingSystem).Caption + " build " + [Environment]::OSVersion.Version) } catch { }
+}
+
+# Only on the disposable runner: make sure banners are not switched off.
+function Enable-Toasts {
+    $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications'
+    if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+    Set-ItemProperty -Path $key -Name ToastEnabled -Value 1 -Type DWord
+    Log 'Windows banners (ToastEnabled) set to 1'
+}
+
+# Opens Windows' own notification center (Win+N) and looks for $text in it. A notification that Windows received is listed
+# there even when its banner was not shown. Returns $true / $false.
+function Check-NotificationCenter([string]$text, [string]$shotName) {
+    try {
+        [Native]::keybd_event(0x5B, 0, 0, [UIntPtr]::Zero)            # Win down
+        [Native]::keybd_event(0x4E, 0, 0, [UIntPtr]::Zero)            # N down
+        [Native]::keybd_event(0x4E, 0, 2, [UIntPtr]::Zero)            # N up
+        [Native]::keybd_event(0x5B, 0, 2, [UIntPtr]::Zero)            # Win up
+        Start-Sleep -Milliseconds 1800
+        Save-Shot $shotName
+        $found = $false
+        $cond = [System.Windows.Automation.Condition]::TrueCondition
+        foreach ($w in [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)) {
+            try {
+                if ($w.Current.Name -notmatch 'Notification|Calendar|Action') { continue }
+                foreach ($el in $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)) {
+                    try { if ($el.Current.Name -like "*$text*") { $found = $true; break } } catch { }
+                }
+            } catch { }
+            if ($found) { break }
+        }
+        Press-Keys '{ESC}' 300
+        if ($found) { Log "OK: Windows notification center lists '$text'" } else { Log "PROBLEM: Windows notification center does not list '$text'" }
+        return $found
+    } catch { Log "notification center check failed: $($_.Exception.Message)"; return $false }
 }
 
 $script:proc = $null
@@ -504,6 +554,7 @@ try {
     if ($IsCI) {
         Set-SystemTheme $SystemTheme
         Enable-Animations
+        Enable-Toasts
         Log 'MODE: GitHub Actions (the runner is disposable: Windows theme and animations are set, ASD is started with --github-actions)'
     } else {
         Log 'MODE: local (safe). ASD gets its own empty data folder; your settings, your Keys Store and Windows are not touched.'
@@ -709,6 +760,7 @@ try {
     # 11) NOTIFICATIONS: the bell, its dialog, the cards, and the Windows notification when ASD is not the active window.
     #     A tiny local web server (a background job) gives a request and a download that each take about 4 seconds.
     Log 'notifications test: starting the local test server'
+    Log-ToastSettings
     $port = 18765
     $notesLog = Join-Path $settingsDir 'notifications.log'
     Remove-Item $notesLog -Force -ErrorAction SilentlyContinue
@@ -769,7 +821,8 @@ try {
         if (Wait-NotesLog 'demo-download.bin' 90) { Log 'OK: the download notification was posted' } else { Log 'PROBLEM: no download notification after 90 s' }
         Start-Sleep -Milliseconds 1500                           # the toast is on screen now
         Save-Shot 'download-done'
-        Start-Sleep -Milliseconds 2500
+        [void](Check-NotificationCenter 'demo-download.bin' 'center-after-download')   # did Windows receive it?
+        Start-Sleep -Milliseconds 1000
         Come-Back $away
         if (Click-Named 'Notifications' 800) {
             if (Wait-AnyName @('demo-download.bin') 10) {
