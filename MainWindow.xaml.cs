@@ -110,6 +110,10 @@ public sealed partial class MainWindow : Window
         _splash = PlaySplashAsync();
         _ = CheckForUpdateOnStartupAsync();
         Notifier.Init(DispatcherQueue, tag => OpenTool(tag), BringToFront, () => _current?.Tag);
+        KeyWatch.Check();                                              // keys that are about to expire (or have)
+        var keyTimer = new DispatcherTimer { Interval = TimeSpan.FromHours(4) };
+        keyTimer.Tick += (_, _) => KeyWatch.Check();
+        keyTimer.Start();
     }
 
     private void RootNav_ItemInvoked(NavigationView sender, NavigationViewItemInvokedEventArgs args)
@@ -339,7 +343,28 @@ public sealed partial class MainWindow : Window
         };
         AutomationProperties.SetName(card, n.Title);
         card.Click += (_, _) => { closeDialog(); OpenTool(n.Tool); };
-        return card;
+
+        // a small "x" next to the card removes just this notification (a button cannot sit inside a button)
+        var dismiss = new Button
+        {
+            Content = new FontIcon { Glyph = "\uE711", FontSize = 11 },
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Padding = new Thickness(10, 0, 10, 0),
+        };
+        AutomationProperties.SetName(dismiss, "Dismiss " + n.Title);
+        ToolTipService.SetToolTip(dismiss, n.KeyToken != null ? "Dismiss (this warning will not come back)" : "Remove");
+        var row = new Grid { ColumnSpacing = 4 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(dismiss, 1);
+        row.Children.Add(card);
+        row.Children.Add(dismiss);
+        dismiss.Click += (_, _) =>
+        {
+            Notifier.Remove(n);
+            (row.Parent as Panel)?.Children.Remove(row);
+        };
+        return row;
     }
 
     // ───────── clipboard banner ─────────

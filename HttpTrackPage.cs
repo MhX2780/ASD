@@ -201,7 +201,8 @@ public sealed class HttpTrackPage : ToolPage
             Status.Text = "Finished.";
 
             // a request that took 3 s or more: tell the person when it is done, wherever they are
-            if (clock.Elapsed.TotalSeconds >= 3 && !token.IsCancellationRequested)
+            var slow = int.TryParse(SettingsStore.Get("notify.slowSec", "3"), out var ss) ? Math.Max(1, ss) : 3;
+            if (clock.Elapsed.TotalSeconds >= slow && !token.IsCancellationRequested)
             {
                 var host = Uri.TryCreate(opt.Url.Contains("://") ? opt.Url : "https://" + opt.Url, UriKind.Absolute, out var u) ? u.Host : "request";
                 var code = int.TryParse(lastStatus, out var c) ? c : 0;
