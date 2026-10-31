@@ -139,11 +139,19 @@ internal static class UpdateService
     }
 
     /// <summary>
-    /// update.txt is published next to ASD.zip, not inside it. Download it into the staging folder so the
-    /// installer copies it last (it records which version is installed). Fails the update when it can't be fetched.
+    /// update.txt records which version is installed; the installer copies it last. The copy inside ASD.zip is used when
+    /// there is one: it always belongs to the zip that was downloaded, even if a newer build was published meanwhile.
+    /// Only for an older zip without it, the release's update.txt is downloaded (the update fails when that can't be fetched).
     /// </summary>
     private static async Task StageInfoAsync(CancellationToken ct)
     {
+        var inZip = Path.Combine(StagingDir, "update.txt");
+        if (File.Exists(inZip))
+        {
+            var packed = await File.ReadAllTextAsync(inZip, ct);
+            if (packed.Length <= MaxInfoBytes && packed.Contains("SHA:", StringComparison.Ordinal)) return;
+        }
+
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(ConnectTimeout);
         try
@@ -249,7 +257,7 @@ internal static class UpdateService
             }
         }
 
-        // The package must contain the app itself. (update.txt is not in the zip: StageInfoAsync adds it.)
+        // The package must contain the app itself. (update.txt is normally inside the zip too; StageInfoAsync downloads it otherwise.)
         var exeName = Path.GetFileName(Environment.ProcessPath ?? "ASD.exe");
         if (!File.Exists(Path.Combine(StagingDir, exeName)))
             throw new InvalidDataException($"The update package is invalid ({exeName} is missing).");

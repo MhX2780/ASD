@@ -180,7 +180,7 @@ jobs:
         }
         [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "log_path=$log`n")
 
-    - name: Create ZIP (ASD.zip) and update.txt (separate file, NOT inside the zip)
+    - name: Create ZIP (ASD.zip) and update.txt (inside the zip AND as a separate release file)
       id: zip
       if: steps.findexe.outputs.exe_found == 'true' || steps.findexe2.outputs.exe_found == 'true'
       shell: pwsh
@@ -193,7 +193,8 @@ jobs:
         Compress-Archive -Path (Join-Path $dir '*') -DestinationPath $zip -CompressionLevel Optimal
         $size = [math]::Round(((Get-Item $zip).Length / 1MB), 2)
 
-        # update.txt = commit name (message) + details. Published next to ASD.zip in the release, never inside it.
+        # update.txt = commit name (message) + details. It goes INTO ASD.zip (so a manual download knows its version)
+        # and is also published next to ASD.zip in the release (so the app can check for updates without downloading the zip).
         $subject = (git log -1 --pretty=%s).Trim()
         $body    = (git log -1 --pretty=%b).Trim()
         $sha     = (git rev-parse --short HEAD).Trim()
@@ -204,17 +205,18 @@ jobs:
         $updatePath = Join-Path $env:RUNNER_TEMP 'update.txt'
         Set-Content -Path $updatePath -Value $lines -Encoding utf8
         Get-Content $updatePath
+        Compress-Archive -Path $updatePath -DestinationPath $zip -Update   # adds update.txt at the root of the zip
 
-        # Sanity check: ASD.exe must be at the root; update.txt is deliberately NOT in the zip
+        # Sanity check: ASD.exe and update.txt must both be at the root of the zip
         Add-Type -AssemblyName System.IO.Compression
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         $check = [System.IO.Compression.ZipFile]::OpenRead($zip)
         try {
           if (-not ($check.Entries | Where-Object { $_.FullName -eq 'ASD.exe' })) { throw 'ASD.exe is missing from the root of ASD.zip' }
-          if ($check.Entries | Where-Object { $_.FullName -eq 'update.txt' }) { throw 'update.txt must not be inside ASD.zip' }
+          if (-not ($check.Entries | Where-Object { $_.FullName -eq 'update.txt' })) { throw 'update.txt is missing from the root of ASD.zip' }
         } finally { $check.Dispose() }
 
-        Write-Host "CREATED: ASD.zip ($size MB) + separate update.txt"
+        Write-Host "CREATED: ASD.zip ($size MB, with update.txt inside) + separate update.txt"
         echo "zip_path=$zip" >> $env:GITHUB_OUTPUT
         echo "zip_size=$size" >> $env:GITHUB_OUTPUT
         echo "update_path=$updatePath" >> $env:GITHUB_OUTPUT
