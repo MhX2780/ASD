@@ -8,9 +8,7 @@ namespace ASD;
 /// </summary>
 internal static class SettingsStore
 {
-    private static readonly string FilePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "ASD", "settings.json");
+    private static readonly string FilePath = AppPaths.File("settings.json");
 
     private static readonly object Gate = new();
     private static Dictionary<string, string>? _cache;

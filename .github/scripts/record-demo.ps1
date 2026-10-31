@@ -11,6 +11,9 @@
   (so the next run can be fixed quickly) and carries on.
 #>
 param(
+    # -GithubActions (also written -github-actions): "this is the disposable GitHub runner". Without it the script treats the computer
+    # as a normal one and changes NOTHING on the system. Only the workflow passes it.
+    [Alias('github-actions')] [switch] $GithubActions,
     [Parameter(Mandatory)] [string] $ExePath,
     [Parameter(Mandatory)] [string] $OutFile,
     [string] $LogFile = (Join-Path $env:RUNNER_TEMP 'record-demo-log.txt'),
@@ -23,6 +26,16 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+
+# SAFE BY DEFAULT. Without -GithubActions this is a normal computer: Windows' theme and animation settings are not touched,
+# only the ASD.exe this script started is ended, and the app gets its own empty data folder (--data-dir), so your settings
+# and your Keys Store are never read, changed or deleted.
+# With -GithubActions (what the workflow passes) it is the disposable runner: the theme and animations are set, every
+# ASD.exe is ended, and the app is started with --github-actions.
+$IsCI = $GithubActions.IsPresent
+if ($IsCI -and $env:GITHUB_ACTIONS -ne 'true') {
+    Write-Host 'WARNING: -GithubActions was given, but this does not look like a GitHub runner. Windows theme and animation settings WILL be changed.'
+}
 Set-Content -Path $LogFile -Value "record-demo started $(Get-Date -Format o)"
 
 function Log([string]$m) {
@@ -429,8 +442,14 @@ function Delete-Key([string]$name) {
 
 # ------------------------- scenario -------------------------
 try {
-    Set-SystemTheme $SystemTheme
-    Enable-Animations
+    if ($IsCI) {
+        Set-SystemTheme $SystemTheme
+        Enable-Animations
+        Log 'MODE: GitHub Actions (the runner is disposable: Windows theme and animations are set, ASD is started with --github-actions)'
+    } else {
+        Log 'MODE: local (safe). ASD gets its own empty data folder; your settings, your Keys Store and Windows are not touched.'
+        Log 'Do not touch the mouse or keyboard until it finishes.'
+    }
     # Run a COPY of the build, so the update window can never touch the files that go into ASD.zip.
     # The copy gets the same update.txt as the latest release -> the Updates window ends with "ASD is up to date"
     # instead of downloading and replacing the app.
@@ -444,8 +463,10 @@ try {
     } catch { Log "could not download update.txt ($($_.Exception.Message)) - the Updates window will show an error, nothing is installed" }
 
     # Seed the app's own theme setting, so the video starts light even though the runner's Windows is dark.
-    $settingsDir = Join-Path $env:LOCALAPPDATA 'ASD'
+    $settingsDir = Join-Path (Split-Path $OutFile -Parent) 'asd-data'       # the app's data folder for THIS test only
+    Remove-Item $settingsDir -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $settingsDir -Force | Out-Null
+    Log "app data folder for this test: $settingsDir"
     $settingsFile = Join-Path $settingsDir 'settings.json'
     if ($AppTheme -eq 'auto') { Remove-Item $settingsFile -Force -ErrorAction SilentlyContinue }
     else { [System.IO.File]::WriteAllText($settingsFile, ('{"ThemeMode":"' + $AppTheme + '"}'), (New-Object System.Text.UTF8Encoding($false))) }
@@ -456,7 +477,9 @@ try {
     $script:recStart = Get-Date
     Start-Sleep -Milliseconds 700
 
-    $script:proc = Start-Process -FilePath $ExePath -PassThru
+    $appArgs = @('--data-dir', $settingsDir)
+    if ($IsCI) { $appArgs += '--github-actions' }
+    $script:proc = Start-Process -FilePath $ExePath -ArgumentList $appArgs -PassThru
     Log "ASD started (pid $($script:proc.Id))"
 
     # wait for the main window to appear in UI Automation
@@ -628,7 +651,7 @@ try {
     #     A tiny local web server (a background job) gives a request and a download that each take about 4 seconds.
     Log 'notifications test: starting the local test server'
     $port = 18765
-    $notesLog = Join-Path $env:LOCALAPPDATA 'ASD\notifications.log'
+    $notesLog = Join-Path $settingsDir 'notifications.log'
     Remove-Item $notesLog -Force -ErrorAction SilentlyContinue
     $script:serverJob = Start-Job -ArgumentList $port -ScriptBlock {
         param($port)
@@ -755,7 +778,7 @@ finally {
     Stop-Recording
     if ($script:serverJob) { Stop-Job $script:serverJob -ErrorAction SilentlyContinue; Remove-Job $script:serverJob -Force -ErrorAction SilentlyContinue }
     if ($script:proc -and -not $script:proc.HasExited) { Stop-Process -Id $script:proc.Id -Force -ErrorAction SilentlyContinue }
-    Get-Process -Name ASD -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue   # also a restarted copy
+    if ($IsCI) { Get-Process -Name ASD -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }   # also a restarted copy (only on the disposable runner)
 }
 
 # ------------------------- finalize mp4 -------------------------

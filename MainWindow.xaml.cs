@@ -346,6 +346,7 @@ public sealed partial class MainWindow : Window
     private async void OnWindowActivated(object sender, WindowActivatedEventArgs args)
     {
         if (args.WindowActivationState == WindowActivationState.Deactivated) return;
+        if (AppPaths.GithubActions) return;
         if (SettingsStore.Get("ClipboardDetect", "on") != "on") return;
         try
         {
@@ -387,7 +388,7 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            if (_updatePrompted || UpdateService.ReadLocal() == null) return;
+            if (AppPaths.GithubActions || _updatePrompted || UpdateService.ReadLocal() == null) return;
 
             var check = await UpdateService.CheckAsync(CancellationToken.None);
             if (!check.Available) return;

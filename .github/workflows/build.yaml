@@ -172,7 +172,7 @@ jobs:
         $video   = Join-Path $env:RUNNER_TEMP 'ASD-demo.mp4'
         $log     = Join-Path $env:RUNNER_TEMP 'record-demo-log.txt'
 
-        & "$env:GITHUB_WORKSPACE\.github\scripts\record-demo.ps1" -ExePath $exePath -OutFile $video -LogFile $log -Scenario '${{ inputs.scenario || 'notifications' }}'
+        & "$env:GITHUB_WORKSPACE\.github\scripts\record-demo.ps1" -ExePath $exePath -OutFile $video -LogFile $log -GithubActions -Scenario '${{ inputs.scenario || 'notifications' }}'
 
         # Windows PowerShell 5.1 ">>" writes UTF-16, which GitHub cannot read, so append as plain UTF-8
         if (Test-Path $video) {

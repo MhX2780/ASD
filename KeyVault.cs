@@ -48,8 +48,7 @@ internal static class KeyVault
     private const int Iterations = 600_000;
     private const string HelloName = "ASD.KeysStore";
 
-    private static readonly string FilePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ASD", "keys.vault");
+    private static readonly string FilePath = AppPaths.File("keys.vault");
 
     private static readonly byte[] AadPassword = Encoding.UTF8.GetBytes("ASD.keys.dek.password");
     private static readonly byte[] AadHello = Encoding.UTF8.GetBytes("ASD.keys.dek.hello");

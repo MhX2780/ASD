@@ -47,8 +47,7 @@ internal static class UpdateService
 
     public static string LocalInfoPath => Path.Combine(AppDir, "update.txt");
 
-    private static string WorkDir => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ASD", "update");
+    private static string WorkDir => AppPaths.File("update");
 
     private static string StagingDir => Path.Combine(WorkDir, "staging");
     private static string ZipPath => Path.Combine(WorkDir, "ASD.zip");

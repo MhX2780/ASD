@@ -27,8 +27,7 @@ internal static class Notifier
     private static Func<string?> _currentTool = () => null;
     private static bool _toasts;
 
-    private static string LogPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ASD", "notifications.log");
+    private static string LogPath => AppPaths.File("notifications.log");
 
     public static void Init(DispatcherQueue ui, Action<string> openTool, Action bringToFront, Func<string?> currentTool)
     {
