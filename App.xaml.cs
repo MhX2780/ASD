@@ -14,6 +14,15 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs e)
     {
+        // ASD.exe --run / --check file.automation: run without a window and exit (see AutomationCli).
+        var cli = Environment.GetCommandLineArgs();
+        if (AutomationCli.Wants(cli))
+        {
+            var code = Task.Run(() => AutomationCli.RunAsync(cli)).GetAwaiter().GetResult();
+            Environment.Exit(code);
+            return;
+        }
+
         // cd-r.txt next to ASD.exe = running from a read-only disc (CD-R / DVD):
         // copy the app to a folder the user picks first, instead of opening the main window.
         if (InstallWindow.IsDiscCopy)

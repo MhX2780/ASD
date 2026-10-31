@@ -149,6 +149,21 @@ jobs:
         Write-Host "Screenshot saved to: $screenshotPath"
         echo "screenshot_path=$screenshotPath" >> $env:GITHUB_OUTPUT
 
+    - name: Automation self-test (ASD.exe --run / --check, no window)
+      id: autotest
+      if: steps.findexe.outputs.exe_found == 'true' || steps.findexe2.outputs.exe_found == 'true'
+      shell: pwsh
+      continue-on-error: true
+      run: |-
+        $dir = "${{ steps.findexe.outputs.exe_dir }}"
+        if (-not $dir) { $dir = "${{ steps.findexe2.outputs.exe_dir }}" }
+        $exePath = Join-Path $dir 'ASD.exe'
+        $logDir  = Join-Path $env:RUNNER_TEMP 'asd-automation-tests'
+        & "$env:GITHUB_WORKSPACE\.github\scripts\test-automation.ps1" -ExePath $exePath -TestDir "$env:GITHUB_WORKSPACE\.github\automation-tests" -LogDir $logDir
+        $code = $LASTEXITCODE
+        "log_dir=$logDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+        exit $code
+
     - name: Install ffmpeg (screen recorder)
       id: ffmpeg
       if: steps.findexe.outputs.exe_found == 'true' || steps.findexe2.outputs.exe_found == 'true'
@@ -231,6 +246,8 @@ jobs:
           ${{ steps.screenshot.outputs.screenshot_path }}
           ${{ steps.record.outputs.video_path }}
           ${{ steps.record.outputs.log_path }}
+          ${{ runner.temp }}/asd-automation-tests/*.log
+          ${{ runner.temp }}/toast-*.png
 
     - name: Update single release (tag "latest") with ASD.zip, update.txt, Screenshot and demo video
       if: steps.zip.outcome == 'success'

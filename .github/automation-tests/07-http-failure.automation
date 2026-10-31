@@ -1,0 +1,7 @@
+automation: http failure
+cell a:
+  http: GET http://127.0.0.1:9/
+  timeout: 5
+  failure -> h
+cell h:
+  run: echo http-failed-handled

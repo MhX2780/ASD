@@ -1,0 +1,10 @@
+automation: variables
+cell a:
+  run: echo token-123
+  success -> b
+cell b:
+  run: echo got-%ASD_A_OUTPUT%-code-{{a.exitcode}}
+  success -> c
+cell c:
+  notify: result {{b.exitcode}}
+  level: success

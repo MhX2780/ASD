@@ -1,0 +1,12 @@
+automation: success chain
+cell a:
+  run: echo hello-from-a
+  success -> b
+  failure -> never
+cell b:
+  run: echo second
+  success -> done
+cell never:
+  run: echo SHOULD-NOT-RUN
+cell done:
+  title: Finish

@@ -1,0 +1,7 @@
+automation: timeout
+cell slow:
+  run: ping -n 20 127.0.0.1 > nul
+  timeout: 2
+  failure -> ok
+cell ok:
+  run: echo timed-out-handled

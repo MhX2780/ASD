@@ -219,6 +219,65 @@ function Click-Named([string]$name, [int]$pauseMs = 1800, [int]$scrollTries = 0)
     return $true
 }
 
+# Picture of the whole screen, saved next to the log (the workflow uploads toast-*.png), so a Windows notification can be seen
+# even if the video is hard to read. Never fails the run.
+$script:shotNo = 0
+function Save-Shot([string]$what) {
+    try {
+        Add-Type -AssemblyName System.Drawing
+        Add-Type -AssemblyName System.Windows.Forms
+        $script:shotNo++
+        $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+        $file = Join-Path (Split-Path $LogFile -Parent) ('toast-{0}-{1}.png' -f $script:shotNo, ($what -replace '[^A-Za-z0-9]+', '-'))
+        $bmp.Save($file, [System.Drawing.Imaging.ImageFormat]::Png)
+        $g.Dispose(); $bmp.Dispose()
+        Log "screenshot: $file"
+    } catch { Log "screenshot failed: $($_.Exception.Message)" }
+}
+
+# Opens a tool by name and waits until $expect (a name only that tool's page has) is on screen.
+# 1) the Ctrl+K search (works even when the navigation pane is closed or the Toolbox card is below the visible area),
+# 2) the Toolbox page, scrolling down to the card.
+function Open-Tool([string]$title, [string]$expect) {
+    for ($try = 1; $try -le 2; $try++) {
+        Press-Keys '{ESC}' 250
+        Press-Keys '^k' 700
+        Type-Text $title 30
+        Start-Sleep -Milliseconds 600
+        Press-Keys '{ENTER}' 1000
+        if (Wait-AnyName @($expect) 6) { Log "OK: opened '$title' with Ctrl+K"; return $true }
+        Log "Ctrl+K did not open '$title' (try $try)"
+    }
+    if (-not (Find-Element 'Toolbox')) {
+        $t = Find-PaneToggle
+        if ($t) { Click-Toggle $t 700 }
+    }
+    if (Click-Named 'Toolbox' 900) {
+        if (Click-Named $title 900 8) {
+            if (Wait-AnyName @($expect) 8) { Log "OK: opened '$title' from the Toolbox page"; return $true }
+        }
+    }
+    Log "PROBLEM: could not open '$title'"
+    return $false
+}
+
+# Takes the focus away from ASD (Notepad), because ASD only asks Windows for a notification when the person is away.
+function Go-Away {
+    $n = Start-Process notepad -PassThru
+    Start-Sleep -Milliseconds 1200
+    try { [void][Native]::SetForegroundWindow($n.MainWindowHandle) } catch { }
+    Start-Sleep -Milliseconds 500
+    return $n
+}
+function Come-Back($n) {
+    try { if ($n) { Stop-Process -Id $n.Id -Force -ErrorAction SilentlyContinue } } catch { }
+    if ($script:proc.MainWindowHandle -ne [IntPtr]::Zero) { [void][Native]::SetForegroundWindow($script:proc.MainWindowHandle) }
+    Start-Sleep -Milliseconds 700
+}
+
 # ------------------------- ffmpeg -------------------------
 $ffmpeg = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
 if (-not $ffmpeg) { Log 'ffmpeg not found - the clicks will still run but no video will be produced.' }
@@ -700,67 +759,66 @@ try {
         return $false
     }
 
-    # a) a download that SUCCEEDS: start it from HTTP Download, then leave the page (Keys Store): the notification must still arrive
-    if (Click-Named 'Toolbox' 900) {
-        if (Click-Named 'HTTP Download' 900) {
-            if (Wait-AnyName @('Download links') 10) {
-                Fill-Field 'Download links' "http://localhost:$port/file"
-                [void](Click-Named 'Download' 900)
-                [void](Click-Named 'Keys Store' 700)                 # the person is on another page now
-                if (Wait-NotesLog 'demo-download.bin' 90) { Log 'OK: the download notification was posted' } else { Log 'PROBLEM: no download notification after 90 s' }
-                Start-Sleep -Milliseconds 800                         # the badge on the bell is visible now
-                if (Click-Named 'Notifications' 800) {
-                    if (Wait-AnyName @('demo-download.bin') 10) {
-                        Start-Sleep -Milliseconds 1200               # let the list be seen
-                        [void](Click-Named 'demo-download.bin' 1200)   # the card: goes to the tool
-                        if (Wait-AnyName @('Download links') 10) { Log 'OK: the card opened HTTP Download' } else { Log 'PROBLEM: the card did not open HTTP Download' }
-                    } else { Log 'PROBLEM: the card is not in the notifications dialog'; Dump-Names 'notifications' }
-                }
+    # a) a download that SUCCEEDS: start it from HTTP Download, then leave the page and the window: the notification must still arrive
+    if (Open-Tool 'HTTP Download' 'Download links') {
+        Fill-Field 'Download links' "http://localhost:$port/file"
+        if (Click-Named 'Download' 900) { Log 'download started' } else { Log 'PROBLEM: the Download button was not found' }
+        [void](Click-Named 'Keys Store' 700)                     # the person is on another page now ...
+        if (-not (Find-Element 'Keys Store')) { Press-Keys '^k' 300; Type-Text 'Keys Store' 20; Press-Keys '{ENTER}' 800 }
+        $away = Go-Away                                          # ... and in another app: Windows shows the toast
+        if (Wait-NotesLog 'demo-download.bin' 90) { Log 'OK: the download notification was posted' } else { Log 'PROBLEM: no download notification after 90 s' }
+        Start-Sleep -Milliseconds 1500                           # the toast is on screen now
+        Save-Shot 'download-done'
+        Start-Sleep -Milliseconds 2500
+        Come-Back $away
+        if (Click-Named 'Notifications' 800) {
+            if (Wait-AnyName @('demo-download.bin') 10) {
+                Start-Sleep -Milliseconds 1200               # let the list be seen
+                [void](Click-Named 'demo-download.bin' 1200)   # the card: goes to the tool
+                if (Wait-AnyName @('Download links') 10) { Log 'OK: the card opened HTTP Download' } else { Log 'PROBLEM: the card did not open HTTP Download' }
+            } else { Log 'PROBLEM: the card is not in the notifications dialog'; Dump-Names 'notifications' }
+        } else { Log 'PROBLEM: the bell (Notifications) was not found' }
 
-                # b) a download that FAILS (the server answers 404): same way, ends in an error notification
-                if (Wait-AnyName @('Download links') 5) {
-                    Fill-Field 'Download links' ''
-                    Press-Keys '^a'; Press-Keys '{DELETE}' 200
-                    Type-Text "http://localhost:$port/missing"
-                    [void](Click-Named 'Download' 900)
-                    [void](Click-Named 'Keys Store' 700)
-                    if (Wait-NotesLog 'Download failed' 60) { Log 'OK: the failed-download notification was posted' } else { Log 'PROBLEM: no failed-download notification after 60 s' }
-                    if (Click-Named 'Notifications' 800) {
-                        Start-Sleep -Milliseconds 1500
-                        [void](Click-Named 'Close' 600)
-                    }
-                }
-            } else { Log 'HTTP Download page did not open'; Dump-Names 'http download' }
+        # b) a download that FAILS (the server answers 404): same way, ends in an error notification
+        if (Wait-AnyName @('Download links') 5) {
+            Fill-Field 'Download links' ''
+            Press-Keys '^a'; Press-Keys '{DELETE}' 200
+            Type-Text "http://localhost:$port/missing"
+            [void](Click-Named 'Download' 900)
+            $away = Go-Away
+            if (Wait-NotesLog 'Download failed' 60) { Log 'OK: the failed-download notification was posted' } else { Log 'PROBLEM: no failed-download notification after 60 s' }
+            Start-Sleep -Milliseconds 1500
+            Save-Shot 'download-failed'
+            Start-Sleep -Milliseconds 2000
+            Come-Back $away
+            if (Click-Named 'Notifications' 800) {
+                Start-Sleep -Milliseconds 1500
+                [void](Click-Named 'Close' 600)
+            }
         }
     }
 
     # c) HTTP Track: a request that takes 4 s while ASD is NOT the active window -> Windows notification
-    if (Click-Named 'Toolbox' 900) {
-        if (Click-Named 'HTTP Track' 900) {
-            if (Wait-AnyName @('Send') 10) {
-                Fill-Field 'Request URL' "http://localhost:$port/delay"
-                [void](Click-Named 'Send' 500)
-                $other = Start-Process notepad -PassThru           # takes the focus away from ASD
-                Start-Sleep -Seconds 1
-                try { [void][Native]::SetForegroundWindow($other.MainWindowHandle) } catch { }
-                if (Wait-NotesLog 'localhost | HTTP Track' 40) { Log 'OK: the request notification was posted' } else { Log 'PROBLEM: no request notification after 40 s' }
-                Start-Sleep -Seconds 1
-                try { Stop-Process -Id $other.Id -Force -ErrorAction SilentlyContinue } catch { }
-                if ($script:proc.MainWindowHandle -ne [IntPtr]::Zero) { [void][Native]::SetForegroundWindow($script:proc.MainWindowHandle) }
-                Start-Sleep -Milliseconds 800
+    if (Open-Tool 'HTTP Track' 'Request URL') {
+        Fill-Field 'Request URL' "http://localhost:$port/delay"
+        if (-not (Click-Named 'Send' 500)) { Log 'PROBLEM: the Send button was not found' }
+        $away = Go-Away                                              # takes the focus away from ASD while the request runs
+        if (Wait-NotesLog 'localhost | HTTP Track' 40) { Log 'OK: the request notification was posted' } else { Log 'PROBLEM: no request notification after 40 s' }
+        Start-Sleep -Milliseconds 1500
+        Save-Shot 'slow-request'
+        Start-Sleep -Milliseconds 2000
+        Come-Back $away
+        if (Click-Named 'Notifications' 800) {
+            if (Wait-AnyName @('GET localhost') 10) { Start-Sleep -Milliseconds 1200; Log 'OK: the request card is in the list' } else { Log 'PROBLEM: the request card is not in the list'; Dump-Names 'notifications' }
+            # d) Clear all empties the list
+            if (Click-Named 'Clear all' 800) {
                 if (Click-Named 'Notifications' 800) {
-                    if (Wait-AnyName @('GET localhost') 10) { Start-Sleep -Milliseconds 1200; Log 'OK: the request card is in the list' } else { Log 'PROBLEM: the request card is not in the list'; Dump-Names 'notifications' }
-                    # d) Clear all empties the list
-                    if (Click-Named 'Clear all' 800) {
-                        if (Click-Named 'Notifications' 800) {
-                            if (Wait-AnyName @('No notifications yet. Finished downloads and slow requests will appear here.') 5) { Log 'OK: Clear all emptied the list' } else { Log 'PROBLEM: the list was not empty after Clear all' }
-                            Start-Sleep -Milliseconds 800
-                            [void](Click-Named 'Close' 600)
-                        }
-                    } else { [void](Click-Named 'Close' 600) }
+                    if (Wait-AnyName @('No notifications yet. Finished downloads and slow requests will appear here.') 5) { Log 'OK: Clear all emptied the list' } else { Log 'PROBLEM: the list was not empty after Clear all' }
+                    Start-Sleep -Milliseconds 800
+                    [void](Click-Named 'Close' 600)
                 }
-            }
-        }
+            } else { [void](Click-Named 'Close' 600) }
+        } else { Log 'PROBLEM: the bell (Notifications) was not found' }
     }
 
     # what the app itself wrote about the notifications (did Windows show them?)

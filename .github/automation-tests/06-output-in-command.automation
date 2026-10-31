@@ -1,0 +1,7 @@
+# {{cell.output}} is free text and must not be pasted into a command
+automation: output rejected
+cell a:
+  run: echo x
+  success -> b
+cell b:
+  run: echo {{a.output}}

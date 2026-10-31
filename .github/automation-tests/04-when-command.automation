@@ -1,0 +1,9 @@
+automation: when
+cell a:
+  run: echo checking
+  when cmd /c exit 0 -> yes
+  when cmd /c exit 1 -> no
+cell yes:
+  run: echo yes-ran
+cell no:
+  run: echo SHOULD-NOT-RUN

@@ -1,0 +1,10 @@
+# a red arrow is an exception handler: the failure is handled, so the whole run is OK
+automation: failure handled
+cell a:
+  run: exit 3
+  success -> never
+  failure -> handler
+cell handler:
+  run: echo handled-exit-%ASD_A_EXITCODE%
+cell never:
+  run: echo SHOULD-NOT-RUN

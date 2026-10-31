@@ -1,0 +1,9 @@
+automation: from here
+cell a:
+  run: echo ran-a
+  success -> b
+cell b:
+  run: echo ran-b
+  success -> c
+cell c:
+  run: echo ran-c
