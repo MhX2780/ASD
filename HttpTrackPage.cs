@@ -394,7 +394,7 @@ public sealed class HttpTrackPage : ToolPage
             dlg.SecondaryButtonText = "Save log…";
             dlg.CloseButtonText = "Close";
             dlg.PrimaryButtonClick += (_, a) => { a.Cancel = true; Copy(card.Run.LogText()); };
-            dlg.SecondaryButtonClick += (_, a) => { a.Cancel = true; _ = SaveLogAsync(card.Run.LogText()); };
+            dlg.SecondaryButtonClick += (s, a) => { a.Cancel = true; _ = SaveLogAsync(card.Run.LogText()); };
             dlg.Opened += (_, _) => ScrollToEnd(box);
             await dlg.ShowAsync();
         }
