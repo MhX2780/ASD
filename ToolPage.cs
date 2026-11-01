@@ -1,5 +1,6 @@
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Windows.ApplicationModel.DataTransfer;
@@ -17,7 +18,9 @@ public abstract class ToolPage : Page
     private readonly List<(string Key, TextBox Box)> _persisted = new();
 
     protected readonly StackPanel Body = new() { Spacing = 12 };
-    protected readonly TextBlock Status = new() { Opacity = 0.8, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
+    /// <summary>Pages write their messages to Status.Text; the text is shown in an InfoBar below the page (see ShowStatus).</summary>
+    protected readonly TextBlock Status = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly InfoBar _statusBar = new() { IsOpen = false, IsClosable = true, Severity = InfoBarSeverity.Informational };
 
     protected ToolPage(string stateKey, string title, string subtitle)
     {
@@ -34,9 +37,25 @@ public abstract class ToolPage : Page
         Content = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Content = new StackPanel { Padding = new Thickness(32), Spacing = 14, Children = { header, Body, Status } },
+            Content = new StackPanel { Padding = new Thickness(32), Spacing = 14, Children = { header, Body, _statusBar } },
         };
         Loaded += (_, _) => CursorHelper.ApplyHandCursorToButtons(this);
+        Status.RegisterPropertyChangedCallback(TextBlock.TextProperty, (_, _) => ShowStatus());
+    }
+
+    private void ShowStatus()
+    {
+        var text = Status.Text ?? "";
+        if (text.Length == 0) { _statusBar.IsOpen = false; return; }
+        var l = text.ToLowerInvariant();
+        bool Has(params string[] words) => words.Any(w => l.Contains(w));
+        _statusBar.Severity =
+              Has("error", "failed", "wrong", "invalid", "could not", "cannot", "not saved", "did not") ? InfoBarSeverity.Error
+            : Has("copied", "saved", "deleted", "unlocked", "ready", "exported", "imported", "changed", "is on", "turned off") ? InfoBarSeverity.Success
+            : Has("locked", "timeout", "no keys", "there is no", "there are no", "enter ", "type your") ? InfoBarSeverity.Warning
+            : InfoBarSeverity.Informational;
+        _statusBar.Message = text;
+        _statusBar.IsOpen = true;
     }
 
     // ── lifecycle (called by MainWindow) ──
@@ -104,6 +123,74 @@ public abstract class ToolPage : Page
             catch (Exception ex) { Fail(ex); }
         };
         return b;
+    }
+
+    // ── "list page" building blocks (Keys Store style: title + buttons on top, cards below) ──
+
+    /// <summary>A button with an icon and a text; the text is also its UI Automation name.</summary>
+    protected Button ActionBtn(string glyph, string text, Action onClick, bool accent = false)
+    {
+        var b = Btn(text, onClick, accent);
+        b.Content = new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 8,
+            Children = { new FontIcon { Glyph = glyph, FontSize = 14 }, new TextBlock { Text = text } },
+        };
+        AutomationProperties.SetName(b, text);
+        return b;
+    }
+
+    /// <summary>Replaces the standard title block: title (and a small subtitle) on one side, the buttons on the other.</summary>
+    protected void SetHeader(string title, string subtitle, params UIElement[] actions)
+    {
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var titleBlock = new TextBlock { Text = title, FontSize = 26, FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center };
+        var panel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Spacing = 8,
+            HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center,
+        };
+        foreach (var a in actions) panel.Children.Add(a);
+        Grid.SetColumn(panel, 1);
+        grid.Children.Add(titleBlock);
+        grid.Children.Add(panel);
+
+        UIElement head = grid;
+        if (subtitle.Length > 0)
+            head = new StackPanel { Spacing = 2, Children = { grid, new TextBlock { Text = subtitle, Opacity = 0.7, TextWrapping = TextWrapping.Wrap } } };
+        ((StackPanel)((ScrollViewer)Content).Content).Children[0] = head;
+    }
+
+    /// <summary>The rounded box every card uses.</summary>
+    protected static Border CardBox(UIElement child) => new()
+    {
+        Padding = new Thickness(16),
+        CornerRadius = new CornerRadius(8),
+        BorderThickness = new Thickness(1),
+        BorderBrush = new SolidColorBrush(Microsoft.UI.Colors.Gray) { Opacity = 0.4 },
+        Background = new SolidColorBrush(Microsoft.UI.Colors.Gray) { Opacity = 0.08 },
+        Child = child,
+    };
+
+    /// <summary>"Nothing here yet" block: a big icon and one line that tells where to click.</summary>
+    protected static StackPanel EmptyState(string glyph, string text) => new()
+    {
+        Spacing = 14, Margin = new Thickness(0, 60, 0, 60), HorizontalAlignment = HorizontalAlignment.Center,
+        Children =
+        {
+            new FontIcon { Glyph = glyph, FontSize = 44, Opacity = 0.45, HorizontalAlignment = HorizontalAlignment.Center },
+            new TextBlock { Text = text, Opacity = 0.7, HorizontalAlignment = HorizontalAlignment.Center, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center },
+        },
+    };
+
+    /// <summary>A dialog that follows the app's own theme (Light / Dark), not the Windows theme. Only one dialog can be open at a time.</summary>
+    protected ContentDialog MakeDialog(string title)
+    {
+        var d = new ContentDialog { XamlRoot = XamlRoot, RequestedTheme = ActualTheme, Title = title };
+        d.Resources["ContentDialogMaxWidth"] = 900d;
+        return d;
     }
 
     protected Button CopyBtn(string label, Func<string> getText)

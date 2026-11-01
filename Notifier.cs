@@ -113,10 +113,9 @@ internal static class Notifier
         if (!_toasts) return "unavailable";
         try
         {
-            var mark = n.Kind switch { NoteKind.Success => "✔ ", NoteKind.Error => "✘ ", NoteKind.Warning => "⚠ ", _ => "" };
             var builder = new AppNotificationBuilder()
                 .AddArgument("tool", n.Tool)
-                .AddText(mark + (n.ToastTitle ?? n.Title))
+                .AddText(n.ToastTitle ?? n.Title)
                 .AddText(n.ToastText ?? n.Subtitle);
             if (n.KeyToken != null)
             {

@@ -120,6 +120,7 @@ public sealed partial class MainWindow : Window
     {
         if (args.InvokedItemContainer is not NavigationViewItem { Tag: string tag }) return;
         if (tag == "search") { FocusSearch(); return; }
+        if (tag == "bell") { _ = ShowNotificationsAsync(); return; }   // a dialog, not a page
         if (tag == "updates") { UpdateWindow.ShowWindow(); return; }   // opens its own window, no page
         OpenTool(tag);
     }
@@ -244,7 +245,7 @@ public sealed partial class MainWindow : Window
         if (item != null) RootNav.SelectedItem = item;
     }
 
-    // ───────── notifications (bell in the title bar) ─────────
+    // ───────── notifications (bell in the navigation bar, above Search) ─────────
     private bool _notesOpen;
 
     private void UpdateBell()
@@ -264,8 +265,6 @@ public sealed partial class MainWindow : Window
         catch { /* cosmetic */ }
         Activate();
     }
-
-    private async void Bell_Click(object sender, RoutedEventArgs e) => await ShowNotificationsAsync();
 
     private async Task ShowNotificationsAsync()
     {

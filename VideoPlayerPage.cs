@@ -148,6 +148,7 @@ public sealed class VideoPlayerPage : ToolPage
     // ═════════════════ wizard ═════════════════
     private void ShowStep(int step)
     {
+        HideLoading();
         _step1.Visibility = step == 1 ? Visibility.Visible : Visibility.Collapsed;
         _step2.Visibility = step == 2 ? Visibility.Visible : Visibility.Collapsed;
         _step3.Visibility = step == 3 ? Visibility.Visible : Visibility.Collapsed;
@@ -203,6 +204,55 @@ public sealed class VideoPlayerPage : ToolPage
         return g;
     }
 
+    // ═════════════════ "opening" dialog with a progress ring ═════════════════
+    private ContentDialog? _loading;
+
+    private void ShowLoading(string message)
+    {
+        HideLoading();
+        var ring = new ProgressRing { IsActive = true, Width = 52, Height = 52, HorizontalAlignment = HorizontalAlignment.Center };
+        var text = new TextBlock
+        {
+            Text = message, TextWrapping = TextWrapping.Wrap, MaxWidth = 340,
+            HorizontalAlignment = HorizontalAlignment.Center, TextAlignment = TextAlignment.Center, Opacity = 0.8,
+        };
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            RequestedTheme = ActualTheme,
+            Title = "Opening the video",
+            Content = new StackPanel { Spacing = 16, Padding = new Thickness(0, 6, 0, 0), Children = { ring, text } },
+            CloseButtonText = "Cancel",
+        };
+        _loading = dialog;
+        _ = RunLoadingAsync(dialog);
+    }
+
+    private async Task RunLoadingAsync(ContentDialog dialog)
+    {
+        try
+        {
+            await dialog.ShowAsync();
+            if (ReferenceEquals(_loading, dialog))      // closed by the person (Cancel), not by us
+            {
+                _loading = null;
+                _openId++;
+                _opening = false;
+                _watch.Stop();
+                StopPlayback();
+                Status.Text = "Cancelled.";
+            }
+        }
+        catch { /* another dialog is open, or the page is gone: the video still opens without the ring */ }
+    }
+
+    private void HideLoading()
+    {
+        var d = _loading;
+        _loading = null;
+        try { d?.Hide(); } catch { /* already closed */ }
+    }
+
     // ═════════════════ opening ═════════════════
     private async Task OpenAsync()
     {
@@ -213,6 +263,7 @@ public sealed class VideoPlayerPage : ToolPage
         var timeout = TimeoutSeconds[Math.Max(0, _timeout.SelectedIndex)];
         var qualityIndex = SelectedQualityIndex();
         Status.Text = "Loading…";
+        ShowLoading(_mp4.Text.Trim().StartsWith("http", StringComparison.OrdinalIgnoreCase) ? "Connecting to the link and loading the video…" : "Loading the video…");
 
         try
         {
@@ -325,6 +376,7 @@ public sealed class VideoPlayerPage : ToolPage
     private void OnOpened(int id, string qualityNote)
     {
         if (id != _openId || _video == null) return;
+        HideLoading();
         _watch.Stop();
         var seconds = _video.PlaybackSession.NaturalDuration.TotalSeconds;
         _updatingSeek = true;
@@ -339,6 +391,7 @@ public sealed class VideoPlayerPage : ToolPage
     private void OnFailed(int id, string message)
     {
         if (id != _openId) return;
+        HideLoading();
         _watch.Stop();
         _tick.Stop();
         _playToggle.IsChecked = false;
@@ -379,6 +432,7 @@ public sealed class VideoPlayerPage : ToolPage
 
     private void OnWatchTimeout()
     {
+        HideLoading();
         _watch.Stop();
         _video?.Pause();
         _audio?.Pause();

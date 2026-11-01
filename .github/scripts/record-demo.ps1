@@ -812,9 +812,12 @@ try {
     }
 
     # a) a download that SUCCEEDS: start it from HTTP Download, then leave the page and the window: the notification must still arrive
-    if (Open-Tool 'HTTP Download' 'Download links') {
-        Fill-Field 'Download links' "http://localhost:$port/file"
-        if (Click-Named 'Download' 900) { Log 'download started' } else { Log 'PROBLEM: the Download button was not found' }
+    if (Open-Tool 'HTTP Download' 'New download') {
+        if (-not (Click-Named 'New download' 900)) { Log 'PROBLEM: the New download button was not found' }
+        if (Wait-AnyName @('Download links') 10) {
+            Fill-Field 'Download links' "http://localhost:$port/file"
+            if (Click-Named 'Download' 900) { Log 'download started' } else { Log 'PROBLEM: the Download button of the dialog was not found' }
+        } else { Log 'PROBLEM: the New download dialog did not open'; Dump-Names 'new download dialog' }
         [void](Click-Named 'Keys Store' 700)                     # the person is on another page now ...
         if (-not (Find-Element 'Keys Store')) { Press-Keys '^k' 300; Type-Text 'Keys Store' 20; Press-Keys '{ENTER}' 800 }
         $away = Go-Away                                          # ... and in another app: Windows shows the toast
@@ -828,16 +831,16 @@ try {
             if (Wait-AnyName @('demo-download.bin') 10) {
                 Start-Sleep -Milliseconds 1200               # let the list be seen
                 [void](Click-Named 'demo-download.bin' 1200)   # the card: goes to the tool
-                if (Wait-AnyName @('Download links') 10) { Log 'OK: the card opened HTTP Download' } else { Log 'PROBLEM: the card did not open HTTP Download' }
+                if (Wait-AnyName @('New download') 10) { Log 'OK: the card opened HTTP Download' } else { Log 'PROBLEM: the card did not open HTTP Download' }
             } else { Log 'PROBLEM: the card is not in the notifications dialog'; Dump-Names 'notifications' }
         } else { Log 'PROBLEM: the bell (Notifications) was not found' }
 
         # b) a download that FAILS (the server answers 404): same way, ends in an error notification
-        if (Wait-AnyName @('Download links') 5) {
-            Fill-Field 'Download links' ''
-            Press-Keys '^a'; Press-Keys '{DELETE}' 200
-            Type-Text "http://localhost:$port/missing"
-            [void](Click-Named 'Download' 900)
+        if ((Wait-AnyName @('New download') 5) -and (Click-Named 'New download' 900)) {
+            if (Wait-AnyName @('Download links') 10) {
+                Fill-Field 'Download links' "http://localhost:$port/missing"
+                [void](Click-Named 'Download' 900)
+            }
             $away = Go-Away
             if (Wait-NotesLog 'Download failed' 60) { Log 'OK: the failed-download notification was posted' } else { Log 'PROBLEM: no failed-download notification after 60 s' }
             Start-Sleep -Milliseconds 1500
@@ -852,9 +855,12 @@ try {
     }
 
     # c) HTTP Track: a request that takes 4 s while ASD is NOT the active window -> Windows notification
-    if (Open-Tool 'HTTP Track' 'Request URL') {
-        Fill-Field 'Request URL' "http://localhost:$port/delay"
-        if (-not (Click-Named 'Send' 500)) { Log 'PROBLEM: the Send button was not found' }
+    if (Open-Tool 'HTTP Track' 'New request') {
+        if (-not (Click-Named 'New request' 900)) { Log 'PROBLEM: the New request button was not found' }
+        if (Wait-AnyName @('Request URL') 10) {
+            Fill-Field 'Request URL' "http://localhost:$port/delay"
+            if (-not (Click-Named 'Send' 500)) { Log 'PROBLEM: the Send button of the dialog was not found' }
+        } else { Log 'PROBLEM: the New request dialog did not open'; Dump-Names 'new request dialog' }
         $away = Go-Away                                              # takes the focus away from ASD while the request runs
         if (Wait-NotesLog 'localhost | HTTP Track' 40) { Log 'OK: the request notification was posted' } else { Log 'PROBLEM: no request notification after 40 s' }
         Start-Sleep -Milliseconds 1500

@@ -342,6 +342,7 @@ internal static class KeyVault
         lock (Gate) dek = (byte[])RequireDek().Clone();   // own copy: an idle lock during the prompt must not zero it under us
         try
         {
+            using var front = HelloFront.Watch();   // the Windows Security prompt must not open behind the app
             var created = await KeyCredentialManager.RequestCreateAsync(HelloName, KeyCredentialCreationOption.ReplaceExisting);
             if (created.Status != KeyCredentialStatus.Success)
                 throw new InvalidOperationException($"Windows Hello could not be set up ({created.Status}).");
@@ -398,6 +399,7 @@ internal static class KeyVault
     /// <summary>RSA PKCS#1 v1.5 signatures are deterministic: signing a fixed challenge always yields the same bytes, so a hash of them is a stable wrapping key that only this Windows Hello key can reproduce.</summary>
     private static async Task<byte[]?> HelloKekAsync(KeyCredential credential)
     {
+        using var front = HelloFront.Watch();   // the Windows Security prompt must not open behind the app
         var signed = await credential.RequestSignAsync(Windows.Security.Cryptography.CryptographicBuffer.CreateFromByteArray(HelloChallenge));
         if (signed.Status != KeyCredentialStatus.Success) return null;
         Windows.Security.Cryptography.CryptographicBuffer.CopyToByteArray(signed.Result, out var signature);

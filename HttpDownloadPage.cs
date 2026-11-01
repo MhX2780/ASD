@@ -6,93 +6,81 @@ using Microsoft.UI.Xaml.Media;
 
 namespace ASD;
 
+/// <summary>
+/// HTTP Download, Keys Store style: "New download" on top, the downloads below as cards.
+/// A card shows the progress at a glance; clicking it opens everything about that download (size, speed, chunks, …).
+/// "New download" opens a dialog with the link(s) and the options.
+/// </summary>
 public sealed class HttpDownloadPage : ToolPage
 {
     private static readonly string[] LimitLabels = { "Unlimited", "256 KB/s", "512 KB/s", "1 MB/s", "2 MB/s", "5 MB/s", "10 MB/s", "25 MB/s", "50 MB/s" };
     private static readonly long[] LimitValues = { 0, 256L << 10, 512L << 10, 1L << 20, 2L << 20, 5L << 20, 10L << 20, 25L << 20, 50L << 20 };
+    private static readonly string[] ConnLabels = { "1", "2", "4", "8", "16" };
 
-    private readonly TextBox _urls, _headers, _folder, _fileName, _sha;
-    private readonly ComboBox _conn, _limit;
-    private readonly CheckBox _resume, _overwrite, _insecure;
-    private readonly StackPanel _jobsHost = new() { Spacing = 10 };
+    private readonly StackPanel _cardsHost = new() { Spacing = 8 };
+    private readonly StackPanel _empty;
     private readonly List<JobCard> _cards = new();
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(250) };
-    private TextBox? _lastField;      // where "Insert key…" puts the placeholder
-    private bool _starting;           // the unlock dialog is open: ignore a second click on Download
+    private bool _starting;           // the "New download" dialog or the unlock dialog is open: ignore another click
+    private string? _pendingUrl;      // a link from the clipboard banner, opened as soon as the page is shown
 
     private static string DefaultFolder
         => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
 
-    public HttpDownloadPage() : base("httpdl", "HTTP Download",
-        "Fast downloads split into parallel chunks, with live speed, size, ETA, pause / resume and optional SHA-256 check.")
+    /// <summary>Everything the "New download" dialog collects.</summary>
+    private sealed class Form
     {
-        _urls = Input("urls", "Download link(s) — one per line", 80, "https://example.com/big-file.zip");
-        _headers = Input("headers", "Extra headers (optional — Authorization, Cookie …)", 70, "Authorization: Bearer …", persist: false);
-        AutomationProperties.SetName(_urls, "Download links");
-        _folder = Input("folder", "Save to folder", placeholder: DefaultFolder, multiline: false);
-        _fileName = Input("fname", "File name (optional, single link only)", placeholder: "taken from the server / URL", persist: false, multiline: false);
-        _sha = Input("sha", "Expected SHA-256 (optional, single link only)", persist: false, multiline: false);
+        public string Urls = "", Headers = "", FileName = "", Sha = "", Folder = "";
+        public int Connections = 8, LimitIndex;
+        public bool Resume = true, Overwrite, Insecure;
+    }
 
-        _lastField = _urls;
-        _urls.GotFocus += (_, _) => _lastField = _urls;
-        _headers.GotFocus += (_, _) => _lastField = _headers;
+    public HttpDownloadPage() : base("httpdl", "HTTP Download", "")
+    {
+        SetHeader("HTTP Download",
+            "Parallel chunks, live speed, size and ETA, pause / resume and an optional SHA-256 check.",
+            ActionBtn("", "New download", () => _ = NewDownloadAsync(), accent: true),
+            ActionBtn("", "Clear finished", ClearFinished),
+            ActionBtn("", "Open folder", OpenFolder));
 
-        _conn = Combo("1", "2", "4", "8", "16");
-        _conn.SelectedIndex = 3;
-        _limit = Combo(LimitLabels);
-        _limit.SelectionChanged += (_, _) =>
-        {
-            var bps = LimitValues[Math.Max(0, _limit.SelectedIndex)];
-            foreach (var j in HttpDownloads.Jobs.Where(j => j.IsRunning)) j.LimitBps = bps;   // applies to running downloads too
-        };
-
-        _resume = Check("Resume partial downloads", true);
-        _overwrite = Check("Overwrite existing file (otherwise add “(1)”)");
-        _insecure = Check("Ignore TLS certificate errors");
-
-        Body.Children.Add(_urls);
-        Body.Children.Add(TwoCols(_headers, new StackPanel { Spacing = 12, Children = { _fileName, _sha } }));
-        Body.Children.Add(KeyRefs.InsertButton(() => _lastField ?? _urls));
-        Body.Children.Add(KeyRefs.HintText());
-        Body.Children.Add(Grid2(_folder, Btn("Browse…", () => _ = BrowseAsync())));
-        Body.Children.Add(Row(Label("Chunks (connections):"), _conn, Label("Speed limit:"), _limit));
-        Body.Children.Add(Row(_resume, _overwrite, _insecure));
-        Body.Children.Add(Row(
-            Btn("Download", () => _ = StartDownloadsAsync(), true),
-            Btn("Clear finished", ClearFinished),
-            Btn("Open folder", OpenFolder)));
-        Body.Children.Add(new TextBlock { Text = "Downloads", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
-        Body.Children.Add(_jobsHost);
+        _empty = EmptyState("", "Click New download above to start one");
+        Body.Children.Add(_empty);
+        Body.Children.Add(_cardsHost);
 
         _timer.Tick += (_, _) => { foreach (var c in _cards) c.Update(); };
         Loaded += (_, _) =>
         {
             foreach (var job in HttpDownloads.Jobs.Where(j => _cards.All(c => c.Job != j))) AddCard(job);
+            RefreshEmpty();
             _timer.Start();
+            if (_pendingUrl != null) { var u = _pendingUrl; _pendingUrl = null; _ = NewDownloadAsync(u); }
         };
         Unloaded += (_, _) => _timer.Stop();   // downloads keep running in the background
     }
 
     protected override void OnClipboardInput(string text)
     {
-        if (text.Contains("://")) _urls.Text = text.Trim();
+        if (!text.Contains("://")) return;
+        if (IsLoaded) _ = NewDownloadAsync(text.Trim());
+        else _pendingUrl = text.Trim();
     }
 
-    private static Grid Grid2(FrameworkElement stretch, FrameworkElement auto)
+    private void RefreshEmpty() => _empty.Visibility = _cards.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    private static string TargetFolder(string typed)
     {
-        var g = new Grid { ColumnSpacing = 8 };
-        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        Grid.SetColumn(auto, 1);
-        auto.VerticalAlignment = VerticalAlignment.Bottom;
-        g.Children.Add(stretch);
-        g.Children.Add(auto);
-        return g;
+        var f = typed.Trim();
+        return f.Length == 0 ? DefaultFolder : f;
     }
 
-    // ───────── actions ─────────
+    private void OpenFolder()
+    {
+        var f = TargetFolder(SettingsStore.Get("httpdl.folder", ""));
+        Directory.CreateDirectory(f);
+        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{f}\"") { UseShellExecute = true });
+    }
 
-    private async Task BrowseAsync()
+    private static async Task BrowseAsync(TextBox target)
     {
         try
         {
@@ -100,44 +88,126 @@ public sealed class HttpDownloadPage : ToolPage
             picker.FileTypeFilter.Add("*");
             WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindow));
             var folder = await picker.PickSingleFolderAsync();
-            if (folder != null) _folder.Text = folder.Path;
+            if (folder != null) target.Text = folder.Path;
         }
-        catch (Exception ex) { Fail(ex); }
+        catch { /* the picker was closed */ }
     }
 
-    private string TargetFolder()
-    {
-        var f = _folder.Text.Trim();
-        return f.Length == 0 ? DefaultFolder : f;
-    }
+    // ───────── "New download" dialog ─────────
 
-    private void OpenFolder()
-    {
-        var f = TargetFolder();
-        Directory.CreateDirectory(f);
-        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{f}\"") { UseShellExecute = true });
-    }
-
-    private async Task StartDownloadsAsync()
+    private async Task NewDownloadAsync(string? prefill = null)
     {
         if (_starting) return;
         _starting = true;
-        try { await StartDownloadsCoreAsync(); }
+        try
+        {
+            var form = await AskAsync(prefill);
+            if (form != null) await StartAsync(form);
+        }
         catch (Exception ex) { Fail(ex); }
         finally { _starting = false; }
     }
 
-    private async Task StartDownloadsCoreAsync()
+    private async Task<Form?> AskAsync(string? prefill)
     {
-        var urls = _urls.Text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                             .Select(u => u.Contains("://") ? u : "https://" + u)
-                             .ToList();
+        var urls = Input("urls", "Download link(s) — one per line", 84, "https://example.com/big-file.zip", persist: false);
+        AutomationProperties.SetName(urls, "Download links");
+        if (!string.IsNullOrEmpty(prefill)) urls.Text = prefill;
+        var headers = Input("headers", "Extra headers (optional — Authorization, Cookie …)", 70, "Authorization: Bearer …", persist: false);
+        AutomationProperties.SetName(headers, "Extra headers");
+        var fileName = Input("fname", "File name (optional, one link only)", placeholder: "taken from the server / URL", persist: false, multiline: false);
+        var sha = Input("sha", "Expected SHA-256 (optional, one link only)", persist: false, multiline: false);
+        var folder = Input("folder", "Save to folder", placeholder: DefaultFolder, persist: false, multiline: false);
+        folder.Text = SettingsStore.Get("httpdl.folder", "");
+        AutomationProperties.SetName(folder, "Save to folder");
+
+        TextBox last = urls;
+        urls.GotFocus += (_, _) => last = urls;
+        headers.GotFocus += (_, _) => last = headers;
+
+        var conn = Combo(ConnLabels);
+        conn.SelectedIndex = Math.Clamp(Array.IndexOf(ConnLabels, SettingsStore.Get("httpdl.conn", "8")), 0, ConnLabels.Length - 1);
+        var limit = Combo(LimitLabels);
+        limit.SelectedIndex = Math.Clamp(int.TryParse(SettingsStore.Get("httpdl.limit", "0"), out var li) ? li : 0, 0, LimitLabels.Length - 1);
+        var resume = Check("Resume partial downloads", SettingsStore.Get("httpdl.resume", "on") == "on");
+        var overwrite = Check("Overwrite existing file (otherwise add “(1)”)", SettingsStore.Get("httpdl.overwrite", "off") == "on");
+        var insecure = Check("Ignore TLS certificate errors", SettingsStore.Get("httpdl.insecure", "off") == "on");
+
+        var problem = new TextBlock { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed, Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed) };
+
+        var browse = Btn("Browse…", () => _ = BrowseAsync(folder));
+        browse.VerticalAlignment = VerticalAlignment.Bottom;
+        var folderRow = new Grid { ColumnSpacing = 8 };
+        folderRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        folderRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(browse, 1);
+        folderRow.Children.Add(folder);
+        folderRow.Children.Add(browse);
+
+        var content = new StackPanel
+        {
+            Spacing = 12, MinWidth = 640,
+            Children =
+            {
+                urls,
+                TwoCols(headers, new StackPanel { Spacing = 12, Children = { fileName, sha } }),
+                KeyRefs.InsertButton(() => last),
+                KeyRefs.HintText(),
+                folderRow,
+                Row(Label("Chunks (connections):"), conn, Label("Speed limit:"), limit),
+                Row(resume, overwrite, insecure),
+                problem,
+            },
+        };
+
+        var dlg = MakeDialog("New download");
+        dlg.Content = content;
+        dlg.PrimaryButtonText = "Download";
+        dlg.CloseButtonText = "Cancel";
+        dlg.DefaultButton = ContentDialogButton.Primary;
+        dlg.PrimaryButtonClick += (_, a) =>
+        {
+            var list = SplitUrls(urls.Text);
+            if (list.Count == 0) { problem.Text = "Paste at least one download link."; problem.Visibility = Visibility.Visible; a.Cancel = true; return; }
+            var bad = list.FirstOrDefault(u => !Uri.TryCreate(u, UriKind.Absolute, out var uri) || (uri.Scheme != "http" && uri.Scheme != "https"));
+            if (bad != null) { problem.Text = $"Not a valid http/https link: {bad}"; problem.Visibility = Visibility.Visible; a.Cancel = true; }
+        };
+        dlg.Opened += (_, _) => { CursorHelper.ApplyHandCursorToButtons(content); urls.Focus(FocusState.Programmatic); };
+
+        if (await dlg.ShowAsync() != ContentDialogResult.Primary) return null;
+
+        var f = new Form
+        {
+            Urls = urls.Text, Headers = headers.Text, FileName = fileName.Text.Trim(), Sha = sha.Text.Trim(),
+            Folder = TargetFolder(folder.Text),
+            Connections = int.TryParse(Sel(conn), out var n) ? n : 8,
+            LimitIndex = Math.Max(0, limit.SelectedIndex),
+            Resume = Is(resume), Overwrite = Is(overwrite), Insecure = Is(insecure),
+        };
+        SettingsStore.SetMany(new[]
+        {
+            new KeyValuePair<string, string>("httpdl.folder", folder.Text.Trim()),
+            new KeyValuePair<string, string>("httpdl.conn", Sel(conn)),
+            new KeyValuePair<string, string>("httpdl.limit", f.LimitIndex.ToString()),
+            new KeyValuePair<string, string>("httpdl.resume", f.Resume ? "on" : "off"),
+            new KeyValuePair<string, string>("httpdl.overwrite", f.Overwrite ? "on" : "off"),
+            new KeyValuePair<string, string>("httpdl.insecure", f.Insecure ? "on" : "off"),
+        });
+        return f;
+    }
+
+    private static List<string> SplitUrls(string text)
+        => text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+               .Select(u => u.Contains("://") ? u : "https://" + u)
+               .ToList();
+
+    private async Task StartAsync(Form form)
+    {
+        var urls = SplitUrls(form.Urls);
         if (urls.Count == 0) { Status.Text = "Paste at least one download link."; return; }
-        var bad = urls.FirstOrDefault(u => !Uri.TryCreate(u, UriKind.Absolute, out var uri) || (uri.Scheme != "http" && uri.Scheme != "https"));
-        if (bad != null) { Status.Text = $"Not a valid http/https link: {bad}"; return; }
 
         var headers = new List<(string, string)>();
-        foreach (var raw in _headers.Text.Split('\n'))
+        foreach (var raw in form.Headers.Split('\n'))
         {
             var line = raw.Trim();
             var i = line.IndexOf(':');
@@ -169,15 +239,15 @@ public sealed class HttpDownloadPage : ToolPage
             var o = new HttpDownloadOptions
             {
                 Url = url,
-                Folder = TargetFolder(),
-                FileName = single && _fileName.Text.Trim().Length > 0 ? _fileName.Text.Trim() : null,
-                Connections = int.TryParse(Sel(_conn), out var n) ? n : 8,
-                SpeedLimitBps = LimitValues[Math.Max(0, _limit.SelectedIndex)],
+                Folder = form.Folder,
+                FileName = single && form.FileName.Length > 0 ? form.FileName : null,
+                Connections = form.Connections,
+                SpeedLimitBps = LimitValues[Math.Clamp(form.LimitIndex, 0, LimitValues.Length - 1)],
                 Headers = new List<(string Name, string Value)>(headers),
-                Resume = Is(_resume),
-                Overwrite = Is(_overwrite),
-                Insecure = Is(_insecure),
-                Sha256 = single && _sha.Text.Trim().Length > 0 ? _sha.Text.Trim() : null,
+                Resume = form.Resume,
+                Overwrite = form.Overwrite,
+                Insecure = form.Insecure,
+                Sha256 = single && form.Sha.Length > 0 ? form.Sha : null,
                 Keys = keys,
                 Mask = mask,
             };
@@ -188,13 +258,32 @@ public sealed class HttpDownloadPage : ToolPage
         Status.Text = single ? "Download started." : $"{urls.Count} downloads started.";
     }
 
+    // ───────── the list ─────────
+
     private void AddCard(HttpDownloadJob job)
     {
-        var card = new JobCard(job, RemoveCard, PrepareKeysAsync);
+        var card = new JobCard(job, RemoveCard, PrepareKeysAsync, OpenInfoAsync);
         _cards.Add(card);
-        _jobsHost.Children.Insert(0, card.Root);
+        _cardsHost.Children.Insert(0, card.Root);
         card.Update();
+        RefreshEmpty();
         if (IsLoaded) CursorHelper.ApplyHandCursorToButtons(card.Root);
+    }
+
+    private void RemoveCard(JobCard card)
+    {
+        _cards.Remove(card);
+        _cardsHost.Children.Remove(card.Root);
+        RefreshEmpty();
+    }
+
+    private void ClearFinished()
+    {
+        foreach (var c in _cards.Where(c => c.Job.Finished).ToList())
+        {
+            HttpDownloads.Remove(c.Job);
+            RemoveCard(c);
+        }
     }
 
     /// <summary>
@@ -217,19 +306,27 @@ public sealed class HttpDownloadPage : ToolPage
         return true;
     }
 
-    private void RemoveCard(JobCard card)
+    /// <summary>Clicking a card: everything about that download, updating live while the dialog is open.</summary>
+    private async Task OpenInfoAsync(JobCard card)
     {
-        _cards.Remove(card);
-        _jobsHost.Children.Remove(card.Root);
-    }
-
-    private void ClearFinished()
-    {
-        foreach (var c in _cards.Where(c => c.Job.Finished).ToList())
+        if (_starting) return;
+        _starting = true;
+        try
         {
-            HttpDownloads.Remove(c.Job);
-            RemoveCard(c);
+            var view = new JobInfoView(card.Job);
+            card.Info = view;
+            view.Update();
+
+            var dlg = MakeDialog(card.Job.FileName.Length > 0 ? card.Job.FileName : "Download");
+            dlg.Content = new ScrollViewer { Content = view.Root, MinWidth = 640, MaxHeight = 520, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            dlg.PrimaryButtonText = "Show in folder";
+            dlg.CloseButtonText = "Close";
+            dlg.PrimaryButtonClick += (_, a) => { a.Cancel = true; card.ShowInFolder(); };   // stays open
+            try { await dlg.ShowAsync(); }
+            finally { card.Info = null; }
         }
+        catch (Exception ex) { Fail(ex); }
+        finally { _starting = false; }
     }
 
     // ───────── one download card ─────────
@@ -238,40 +335,27 @@ public sealed class HttpDownloadPage : ToolPage
     {
         public readonly HttpDownloadJob Job;
         public readonly Border Root;
+        public JobInfoView? Info;
 
         private readonly TextBlock _title = new() { FontSize = 16, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
         private readonly ProgressBar _bar = new() { Minimum = 0, Maximum = 100 };
-        private readonly TextBlock _stats = new() { FontFamily = new FontFamily("Consolas"), FontSize = 12, IsTextSelectionEnabled = true };
-        private readonly TextBlock _event = new() { Opacity = 0.75, FontSize = 12, TextWrapping = TextWrapping.Wrap };
-        private readonly StackPanel _chunkHost = new() { Spacing = 4 };
-        private readonly List<(ProgressBar Bar, TextBlock Txt)> _rows = new();
-        private readonly Button _pause, _cancel, _open, _remove;
+        private readonly TextBlock _summary = new() { FontSize = 12, Opacity = 0.8, TextTrimming = TextTrimming.CharacterEllipsis };
+        private readonly TextBlock _problem = new() { FontSize = 12, Opacity = 0.9, TextWrapping = TextWrapping.Wrap, Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed) };
+        private readonly Button _pause, _cancel, _remove;
 
-        public JobCard(HttpDownloadJob job, Action<JobCard> onRemove, Func<HttpDownloadJob, Task<bool>> prepare)
+        public JobCard(HttpDownloadJob job, Action<JobCard> onRemove, Func<HttpDownloadJob, Task<bool>> prepare, Func<JobCard, Task> onOpen)
         {
             Job = job;
 
-            _pause = new Button { Content = "Pause" };
+            _pause = Small("Pause");
             _pause.Click += async (_, _) =>
             {
                 if (Job.IsRunning) { Job.Pause(); return; }
                 if (await prepare(Job)) Job.Start();
             };
-            _cancel = new Button { Content = "Cancel" };
+            _cancel = Small("Cancel");
             _cancel.Click += (_, _) => Job.Cancel();
-            _open = new Button { Content = "Show in folder" };
-            _open.Click += (_, _) =>
-            {
-                try
-                {
-                    if (File.Exists(Job.DestPath))
-                        Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{Job.DestPath}\"") { UseShellExecute = true });
-                    else
-                        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{Job.Opt.Folder}\"") { UseShellExecute = true });
-                }
-                catch { }
-            };
-            _remove = new Button { Content = "Remove" };
+            _remove = Small("Remove");
             _remove.Click += (_, _) =>
             {
                 if (!Job.Finished) Job.Cancel();
@@ -279,31 +363,50 @@ public sealed class HttpDownloadPage : ToolPage
                 onRemove(this);
             };
 
-            var chunks = new Expander
+            var left = new StackPanel { Spacing = 6, Children = { _title, _bar, _summary, _problem } };
+            var buttons = new StackPanel
             {
-                Header = "Chunks",
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                Content = _chunkHost,
+                Orientation = Orientation.Horizontal, Spacing = 6,
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0),
+                Children = { _pause, _cancel, _remove },
             };
+            var grid = new Grid();
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(buttons, 1);
+            grid.Children.Add(left);
+            grid.Children.Add(buttons);
 
             Root = new Border
             {
-                Padding = new Thickness(16),
+                Padding = new Thickness(16, 12, 16, 12),
                 CornerRadius = new CornerRadius(8),
                 BorderThickness = new Thickness(1),
                 BorderBrush = new SolidColorBrush(Microsoft.UI.Colors.Gray) { Opacity = 0.4 },
                 Background = new SolidColorBrush(Microsoft.UI.Colors.Gray) { Opacity = 0.08 },
-                Child = new StackPanel
-                {
-                    Spacing = 8,
-                    Children =
-                    {
-                        _title, _bar, _stats, _event, chunks,
-                        new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { _pause, _cancel, _open, _remove } },
-                    },
-                },
+                Child = grid,
             };
+            Root.Tapped += async (_, e) => { if (!e.Handled) await onOpen(this); };
+        }
+
+        /// <summary>A button inside the card must not also count as a click on the card.</summary>
+        private static Button Small(string text)
+        {
+            var b = new Button { Content = text, Padding = new Thickness(10, 4, 10, 4) };
+            b.Tapped += (_, e) => e.Handled = true;
+            return b;
+        }
+
+        public void ShowInFolder()
+        {
+            try
+            {
+                if (File.Exists(Job.DestPath))
+                    Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{Job.DestPath}\"") { UseShellExecute = true });
+                else
+                    Process.Start(new ProcessStartInfo("explorer.exe", $"\"{Job.Opt.Folder}\"") { UseShellExecute = true });
+            }
+            catch { /* explorer could not start */ }
         }
 
         public void Update()
@@ -322,7 +425,59 @@ public sealed class HttpDownloadPage : ToolPage
             _bar.ShowError = j.Phase == "Failed";
             _bar.ShowPaused = j.Phase == "Paused";
 
+            var text = SizeFmt.Bytes(done) + (known ? $" of {SizeFmt.Bytes(total)}  ({done * 100.0 / total:0}%)" : "");
+            if (j.Phase == "Downloading") text += $"  ·  {SizeFmt.Speed(j.Speed)}" + (j.Eta is { } eta ? $"  ·  {SizeFmt.Duration(eta)} left" : "");
+            else if (j.Phase == "Done") text += $"  ·  {SizeFmt.Duration(j.Elapsed)}  ·  average {SizeFmt.Speed(j.AvgSpeed)}";
+            _summary.Text = text;
+
+            var err = j.Phase == "Failed" && j.Error != null ? (j.Opt.Mask?.Invoke(j.Error) ?? j.Error) : "";
+            _problem.Text = err;
+            _problem.Visibility = err.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+            var active = j.IsRunning;
+            _pause.Visibility = j.Finished ? Visibility.Collapsed : Visibility.Visible;
+            _pause.Content = active ? "Pause" : (j.Phase == "Failed" ? "Retry" : "Resume");
+            _pause.IsEnabled = !(active && (j.Phase == "Verifying" || j.Phase == "Probing"));
+            _cancel.Visibility = j.Finished ? Visibility.Collapsed : Visibility.Visible;
+
+            Info?.Update();
+        }
+    }
+
+    // ───────── the details shown when a card is clicked ─────────
+
+    private sealed class JobInfoView
+    {
+        public readonly StackPanel Root;
+        private readonly HttpDownloadJob _job;
+        private readonly TextBlock _stats = new() { FontFamily = new FontFamily("Consolas"), FontSize = 12, IsTextSelectionEnabled = true };
+        private readonly TextBlock _event = new() { Opacity = 0.8, FontSize = 12, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
+        private readonly StackPanel _chunkHost = new() { Spacing = 4 };
+        private readonly List<(ProgressBar Bar, TextBlock Txt)> _rows = new();
+
+        public JobInfoView(HttpDownloadJob job)
+        {
+            _job = job;
+            var chunks = new Expander
+            {
+                Header = "Chunks",
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Content = _chunkHost,
+            };
+            Root = new StackPanel { Spacing = 10, Children = { _stats, _event, chunks } };
+        }
+
+        public void Update()
+        {
+            var j = _job;
+            var done = j.Downloaded;
+            var total = j.TotalSize;
+            var known = total > 0;
+
             var sb = new StringBuilder();
+            sb.AppendLine($"Link        {j.Opt.Url}");
+            sb.AppendLine($"State       {j.Phase}");
             sb.AppendLine($"Size        {(known ? SizeFmt.Bytes(total) : "unknown")}");
             sb.AppendLine($"Downloaded  {SizeFmt.Bytes(done)}" + (known ? $"   ({done * 100.0 / total:0.0}%)" : ""));
             sb.AppendLine($"Speed       {SizeFmt.Speed(j.Speed)}   (average {SizeFmt.Speed(j.AvgSpeed)})" +
@@ -334,24 +489,18 @@ public sealed class HttpDownloadPage : ToolPage
             if (!string.IsNullOrEmpty(j.ContentType))
                 sb.AppendLine($"Type        {j.ContentType}" + (string.IsNullOrEmpty(j.Server) ? "" : $"   ·   {j.Server}"));
             if (j.DestPath.Length > 0) sb.Append($"Saving to   {j.DestPath}");
-            _stats.Text = sb.ToString().TrimEnd();
+            var text = sb.ToString().TrimEnd();
+            _stats.Text = j.Opt.Mask?.Invoke(text) ?? text;
 
             var eventText = j.Phase == "Failed" && j.Error != null ? "⚠ " + j.Error : j.LastEvent;
             _event.Text = j.Opt.Mask?.Invoke(eventText) ?? eventText;
 
             UpdateChunks();
-
-            var active = j.IsRunning;
-            _pause.Visibility = j.Finished ? Visibility.Collapsed : Visibility.Visible;
-            _pause.Content = active ? "Pause" : (j.Phase == "Failed" ? "Retry / Resume" : "Resume");
-            _pause.IsEnabled = !(active && (j.Phase == "Verifying" || j.Phase == "Probing"));
-            _cancel.Visibility = j.Finished ? Visibility.Collapsed : Visibility.Visible;
-            _open.Visibility = j.Phase == "Done" ? Visibility.Visible : Visibility.Collapsed;
         }
 
         private void UpdateChunks()
         {
-            var chunks = Job.Chunks;
+            var chunks = _job.Chunks;
             if (_rows.Count != chunks.Count)
             {
                 _rows.Clear();

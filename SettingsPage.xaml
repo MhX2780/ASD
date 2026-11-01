@@ -4,6 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Loaded="Page_Loaded">
 
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
     <Grid Padding="32" RowSpacing="20" VerticalAlignment="Top">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -58,4 +59,5 @@
             <TextBlock Text="Version 1.3.0  ·  Ctrl+K jumps to any tool" Opacity="0.7"/>
         </StackPanel>
     </Grid>
+    </ScrollViewer>
 </Page>

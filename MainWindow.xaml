@@ -24,17 +24,6 @@
         IsPaneToggleButtonVisible="True"
         BackRequested="TitleBar_BackRequested"
         PaneToggleRequested="TitleBar_PaneToggleRequested">
-        <TitleBar.RightHeader>
-            <Button x:Name="BellButton" Click="Bell_Click" Width="40" Height="36" Padding="0"
-                    Background="Transparent" BorderThickness="0" VerticalAlignment="Center" Margin="0,0,6,0"
-                    AutomationProperties.Name="Notifications" ToolTipService.ToolTip="Notifications">
-                <Grid>
-                    <FontIcon Glyph="&#xE7ED;" FontSize="16" />
-                    <InfoBadge x:Name="BellBadge" Visibility="Collapsed" Value="0"
-                               HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,2,0,0" />
-                </Grid>
-            </Button>
-        </TitleBar.RightHeader>
         <AutoSuggestBox
             x:Name="SearchBox"
             PlaceholderText="Search tools  (Ctrl+K)"
@@ -83,6 +72,12 @@
         </NavigationView.MenuItems>
 
         <NavigationView.FooterMenuItems>
+            <NavigationViewItem x:Name="BellNavItem" Content="Notifications" Tag="bell" SelectsOnInvoked="False" ToolTipService.ToolTip="Notifications">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xEA8F;" FontSize="16" /></NavigationViewItem.Icon>
+                <NavigationViewItem.InfoBadge>
+                    <InfoBadge x:Name="BellBadge" Visibility="Collapsed" Value="0" />
+                </NavigationViewItem.InfoBadge>
+            </NavigationViewItem>
             <NavigationViewItem Content="Search (Ctrl+K)" Tag="search" SelectsOnInvoked="False" ToolTipService.ToolTip="Jump to any tool (Ctrl+K)">
                 <NavigationViewItem.Icon><FontIcon Glyph="&#xE721;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
