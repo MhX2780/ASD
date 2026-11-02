@@ -12,6 +12,9 @@ internal static class AutomationWriter
 {
     private static string One(string? s) => (s ?? "").Replace("\r", " ").Replace("\n", " ").Trim();
 
+    /// <summary>One-line text that cannot be mistaken for the arrow or an option separator.</summary>
+    private static string Safe(string? s) => One(s).Replace("->", "→").Replace("|", "/");
+
     public static string ToText(AutoFile f)
     {
         var sb = new StringBuilder();
@@ -50,11 +53,17 @@ internal static class AutomationWriter
 
             foreach (var a in c.Out)
             {
-                var word = a.Kind switch { ArrowKind.Success => "success", ArrowKind.Failure => "failure", _ => "always" };
-                var head = a.When == null
-                    ? word
-                    : a.Kind == ArrowKind.Always ? "when " + One(a.When) : word + " when " + One(a.When);
-                sb.Append("  ").Append(head).Append(" -> ").Append(a.To).Append('\n');
+                var parts = new List<string>();
+                var extra = a.When != null || a.ExitCode != null || a.Contains != null;
+                if (a.Kind != ArrowKind.Always || !extra) parts.Add(a.Kind switch { ArrowKind.Success => "success", ArrowKind.Failure => "failure", _ => "always" });
+                if (a.ExitCode != null) parts.Add("exit " + a.ExitCode.Value.ToString(CultureInfo.InvariantCulture));
+                if (One(a.Contains).Length > 0) parts.Add("contains " + Safe(a.Contains));
+                if (a.When != null) parts.Add("when " + One(a.When));
+                sb.Append("  ").Append(string.Join(" ", parts)).Append(" -> ").Append(a.To);
+                var color = AutoArrow.NormalizeColor(a.Color);
+                if (color != null) sb.Append(" | color ").Append(color);
+                if (Safe(a.Name).Length > 0) sb.Append(" | name ").Append(Safe(a.Name));
+                sb.Append('\n');
             }
         }
         return sb.ToString();

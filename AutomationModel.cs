@@ -18,6 +18,10 @@ namespace ASD;
 //      failure -> alert                 red arrow:   this cell ended with exit code other than 0
 //      when powershell -c "exit 0" -> deep    orange arrow: runs the command, fires if it exits 0
 //      success when test.cmd -> other   a status AND a command together
+//      exit 2 -> retry                  fires only when the exit code is exactly 2
+//      failure contains timeout -> slow fires only when the cell's output contains "timeout" (any letter case)
+//      always exit 3 contains busy when ping -n 1 x -> t     conditions can be combined: all of them must be true
+//      success -> next | color #8B5CF6 | name Deploy     after the target: your own arrow color and your own text on the arrow
 //
 //    cell alert:
 //      notify: API is down
@@ -47,11 +51,63 @@ internal sealed class AutoArrow
     public ArrowKind Kind = ArrowKind.Success;
     /// <summary>Optional command: the arrow fires only if it exits with 0.</summary>
     public string? When;
+    /// <summary>Optional: the arrow fires only when the cell's exit code is exactly this number.</summary>
+    public int? ExitCode;
+    /// <summary>Optional: the arrow fires only when the cell's output contains this text (letter case ignored).</summary>
+    public string? Contains;
+    /// <summary>Optional: your own color for the arrow, "#RRGGBB" (the editor also accepts a color name and writes the hex).</summary>
+    public string? Color;
+    /// <summary>Optional: your own text on the arrow instead of "success" / "failure" / ...</summary>
+    public string? Name;
     public string To = "";
     public int Line;
 
-    public string Label => (Kind switch { ArrowKind.Success => "success", ArrowKind.Failure => "failure", _ => When == null ? "always" : "" })
-                           + (When != null ? (Kind == ArrowKind.Always ? "when " : " when ") + When : "");
+    /// <summary>True for a plain green / red / grey arrow: no extra condition, no own color, no own name.</summary>
+    public bool IsPlain => When == null && ExitCode == null && Contains == null && Color == null && Name == null;
+
+    /// <summary>The arrow's condition in the language's own words (what comes before "-&gt;").</summary>
+    public string Label
+    {
+        get
+        {
+            var parts = new List<string>();
+            var hasExtra = When != null || ExitCode != null || Contains != null;
+            if (Kind != ArrowKind.Always || !hasExtra) parts.Add(Kind switch { ArrowKind.Success => "success", ArrowKind.Failure => "failure", _ => "always" });
+            if (ExitCode != null) parts.Add("exit " + ExitCode.Value.ToString(CultureInfo.InvariantCulture));
+            if (Contains != null) parts.Add("contains " + Contains);
+            if (When != null) parts.Add("when " + When);
+            return string.Join(" ", parts);
+        }
+    }
+
+    /// <summary>"#RRGGBB" -> (r,g,b), or null when the text is not a color. Also accepts #RGB and a few names.</summary>
+    public static (byte R, byte G, byte B)? ParseColor(string? text)
+    {
+        var t = (text ?? "").Trim();
+        if (t.Length == 0) return null;
+        var named = t.ToLowerInvariant() switch
+        {
+            "green" => "#22A04B", "red" => "#E5484D", "orange" => "#F59E0B", "blue" => "#3B82F6", "purple" => "#8B5CF6",
+            "pink" => "#EC4899", "teal" => "#14B8A6", "yellow" => "#EAB308", "grey" or "gray" => "#8A8A8A", "black" => "#000000", "white" => "#FFFFFF",
+            _ => null,
+        };
+        if (named != null) t = named;
+        if (!t.StartsWith('#')) return null;
+        var hex = t[1..];
+        if (hex.Length == 3) hex = string.Concat(hex.Select(ch => new string(ch, 2)));
+        if (hex.Length != 6) return null;
+        return byte.TryParse(hex[..2], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var r)
+            && byte.TryParse(hex.Substring(2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var g)
+            && byte.TryParse(hex.Substring(4, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var b)
+            ? (r, g, b) : null;
+    }
+
+    /// <summary>The color as the language writes it: "#RRGGBB" in capitals, or null.</summary>
+    public static string? NormalizeColor(string? text)
+    {
+        var c = ParseColor(text);
+        return c == null ? null : $"#{c.Value.R:X2}{c.Value.G:X2}{c.Value.B:X2}";
+    }
 }
 
 internal sealed class AutoCell
@@ -185,7 +241,7 @@ internal static class AutomationParser
     {
         if (!t.Contains("->", StringComparison.Ordinal)) return false;
         var first = FirstWord(t).ToLowerInvariant();
-        return first is "success" or "failure" or "always" or "when";
+        return first is "success" or "failure" or "always" or "when" or "exit" or "contains";
     }
 
     private static void ParseArrow(AutoFile f, AutoCell cell, string t, int ln)
@@ -193,42 +249,87 @@ internal static class AutomationParser
         var idx = t.LastIndexOf("->", StringComparison.Ordinal);
         var head = t[..idx].Trim();
         var tail = t[(idx + 2)..].Trim();
-        var first = FirstWord(head);
-        var rest = head[first.Length..].Trim();
 
-        var kind = ArrowKind.Success;
-        string? cond = null;
+        // after the target(s): "| color #RRGGBB | name some text"
+        string? color = null, name = null;
+        var bar = tail.IndexOf('|');
+        if (bar >= 0)
+        {
+            var options = tail[(bar + 1)..].Split('|', StringSplitOptions.TrimEntries);
+            tail = tail[..bar].Trim();
+            foreach (var opt in options)
+            {
+                if (opt.Length == 0) continue;
+                var key = FirstWord(opt);
+                var value = opt[key.Length..].Trim();
+                switch (key.ToLowerInvariant())
+                {
+                    case "color":
+                    case "colour":
+                        color = AutoArrow.NormalizeColor(value);
+                        if (color == null) { f.Errors.Add($"line {ln}: \"{value}\" is not a color (write it like  color #8B5CF6  or a name such as orange, blue, purple)"); return; }
+                        break;
+                    case "name":
+                        if (value.Length == 0) { f.Errors.Add($"line {ln}: \"name\" needs a text, e.g.  name Retry"); return; }
+                        name = value;
+                        break;
+                    default:
+                        f.Errors.Add($"line {ln}: unknown arrow option \"{key}\" after the target (use  | color #RRGGBB  and  | name text)");
+                        return;
+                }
+            }
+        }
+
+        var first = FirstWord(head);
+        var rest = head;
+        var kind = ArrowKind.Always;
         switch (first.ToLowerInvariant())
         {
-            case "success": kind = ArrowKind.Success; break;
-            case "failure": kind = ArrowKind.Failure; break;
-            case "always": kind = ArrowKind.Always; break;
-            default: // "when"
-                kind = ArrowKind.Always;
-                cond = rest;
-                rest = "";
-                if (cond.Length == 0) { f.Errors.Add($"line {ln}: \"when\" needs a command, e.g.  when powershell -c \"exit 0\" -> next"); return; }
-                break;
+            case "success": kind = ArrowKind.Success; rest = head[first.Length..].Trim(); break;
+            case "failure": kind = ArrowKind.Failure; rest = head[first.Length..].Trim(); break;
+            case "always": kind = ArrowKind.Always; rest = head[first.Length..].Trim(); break;
         }
 
+        // optional conditions, in this order:  exit N   contains TEXT   when COMMAND
+        int? exitCode = null;
+        string? contains = null, cond = null;
+        if (rest.StartsWith("exit ", StringComparison.OrdinalIgnoreCase) || rest.Equals("exit", StringComparison.OrdinalIgnoreCase))
+        {
+            rest = rest.Length > 4 ? rest[5..].Trim() : "";
+            var num = FirstWord(rest);
+            if (!int.TryParse(num, NumberStyles.Integer, CultureInfo.InvariantCulture, out var code))
+            { f.Errors.Add($"line {ln}: \"exit\" needs a number, e.g.  exit 2 -> retry"); return; }
+            exitCode = code;
+            rest = rest[num.Length..].Trim();
+        }
+        if (rest.StartsWith("contains ", StringComparison.OrdinalIgnoreCase) || rest.Equals("contains", StringComparison.OrdinalIgnoreCase))
+        {
+            rest = rest.Length > 8 ? rest[9..].Trim() : "";
+            var w = rest.IndexOf(" when ", StringComparison.OrdinalIgnoreCase);
+            var text = (w >= 0 ? rest[..w] : rest).Trim();
+            rest = w >= 0 ? rest[w..].Trim() : "";
+            if (text.Length == 0) { f.Errors.Add($"line {ln}: \"contains\" needs a text, e.g.  contains timeout -> slow"); return; }
+            contains = text;
+        }
+        if (rest.StartsWith("when ", StringComparison.OrdinalIgnoreCase) || rest.Equals("when", StringComparison.OrdinalIgnoreCase))
+        {
+            cond = rest.Length > 4 ? rest[5..].Trim() : "";
+            if (cond.Length == 0) { f.Errors.Add($"line {ln}: \"when\" needs a command, e.g.  when powershell -c \"exit 0\" -> next"); return; }
+            rest = "";
+        }
         if (rest.Length > 0)
         {
-            if (rest.StartsWith("when ", StringComparison.OrdinalIgnoreCase))
-            {
-                cond = rest[5..].Trim();
-                if (cond.Length == 0) { f.Errors.Add($"line {ln}: \"when\" needs a command"); return; }
-            }
-            else
-            {
-                f.Errors.Add($"line {ln}: unexpected text \"{rest}\" before the arrow (use \"{first} when <command> -> target\")");
-                return;
-            }
+            var kw = first.Length > 0 ? first : "success";
+            f.Errors.Add($"line {ln}: unexpected text \"{rest}\" before the arrow (use \"{kw} exit N contains TEXT when <command> -> target\")");
+            return;
         }
+        if (first.Equals("when", StringComparison.OrdinalIgnoreCase) && cond == null)
+        { f.Errors.Add($"line {ln}: \"when\" needs a command, e.g.  when powershell -c \"exit 0\" -> next"); return; }
 
         var targets = tail.Split(new[] { ',', ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
         if (targets.Length == 0) { f.Errors.Add($"line {ln}: the arrow has no target cell after \"->\""); return; }
         foreach (var to in targets)
-            cell.Out.Add(new AutoArrow { Kind = kind, When = cond, To = to, Line = ln });
+            cell.Out.Add(new AutoArrow { Kind = kind, When = cond, ExitCode = exitCode, Contains = contains, Color = color, Name = name, To = to, Line = ln });
     }
 
     private static void SetStep(AutoFile f, AutoCell cell, StepKind kind, int ln)

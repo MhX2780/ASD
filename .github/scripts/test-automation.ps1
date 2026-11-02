@@ -55,6 +55,13 @@ $tests = @(
     @{ File = '12-timeout.automation'; Mode = '--run'; Exit = 0
        Must = @('took longer than 2 s', 'timed-out-handled', 'RESULT OK')
        Not = @() },
+    # own arrows: exit code, text in the output, a command, all together; and an own color / name
+    @{ File = '13-custom-arrows.automation'; Mode = '--run'; Exit = 0
+       Must = @('ran-two', 'ran-found', 'ran-combo', 'SKIP\s+three', 'SKIP\s+missing', 'SKIP\s+never', 'RESULT OK')
+       Not = @('RUN\s+three', 'RUN\s+missing', 'RUN\s+never', 'SHOULD-NOT-RUN') },
+    @{ File = '14-arrow-errors.automation'; Mode = '--check'; Exit = 2
+       Must = @('line 4: "notacolor" is not a color', 'line 5: "exit" needs a number', 'line 6: unknown arrow option "size"', 'line 7: "contains" needs a text', 'INVALID')
+       Not = @() },
     # "Run this cell" runs one cell and follows no arrow
     @{ File = '01-success-chain.automation'; Mode = '--run'; Exit = 0; Tag = 'only-a'; Extra = @('--only', 'a')
        Must = @('DONE\s+a\s+exit 0', 'hello-from-a', 'RESULT OK')
@@ -67,6 +74,7 @@ $tests = @(
     @{ File = '07-http-failure.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
     @{ File = '08-join.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
     @{ File = '10-from-here.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
+    @{ File = '13-custom-arrows.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
     @{ File = '12-timeout.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
     # a valid file is accepted by --check
     @{ File = '01-success-chain.automation'; Mode = '--check'; Exit = 0; Tag = 'check'

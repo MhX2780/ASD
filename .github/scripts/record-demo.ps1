@@ -206,7 +206,7 @@ function Find-Element([string]$name) {
     foreach ($w in (Get-AppWindows)) {
         $all += @($w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond))   # filtered inside UIA = fast
     }
-    $preferred = 'ControlType.Button', 'ControlType.ListItem', 'ControlType.RadioButton', 'ControlType.TabItem', 'ControlType.CheckBox'
+    $preferred = 'ControlType.Button', 'ControlType.SplitButton', 'ControlType.MenuItem', 'ControlType.ListItem', 'ControlType.RadioButton', 'ControlType.TabItem', 'ControlType.CheckBox'
     $hits = @()
     foreach ($el in $all) {
         try {
@@ -941,17 +941,28 @@ try {
             Start-Sleep -Milliseconds 900
             return $true
         }
-        function Open-SplitMenu([string]$splitName, [string]$item) {   # click the little arrow of a SplitButton, then the menu entry
-            $b = Find-Element $splitName
-            if (-not $b) { Log "PROBLEM: the split button '$splitName' was not found"; return $false }
-            $x = [int]($b.Rect.X + $b.Rect.Width - 14); $y = [int]($b.Rect.Y + $b.Rect.Height / 2)
-            Move-Mouse $x $y
-            Start-Sleep -Milliseconds 170
-            Click-Here
-            Log "CLICK the arrow of '$splitName' at ($x,$y)"
-            Start-Sleep -Milliseconds 700
-            if (-not (Wait-AnyName @($item) 5)) { Log "PROBLEM: '$item' is not in the menu of '$splitName'"; Dump-Names "menu $splitName"; return $false }
-            return (Click-Named $item 700)
+        function Open-SplitMenu([string]$splitName, [string]$item, [string]$shortcut = '') {   # open the drop-down part of a SplitButton, then click the entry
+            # UI Automation: SplitButton -> ExpandCollapse (never a pixel click: a click on the main part would run Save / Add cell)
+            $cond = [System.Windows.Automation.AndCondition]::new(
+                [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, $splitName),
+                [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::SplitButton))
+            $opened = $false
+            foreach ($w in (Get-AppWindows)) {
+                $el = $w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+                if (-not $el) { continue }
+                try {
+                    $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+                    $opened = $true
+                    Log "OPENED the menu of '$splitName' (UI Automation)"
+                } catch { Log "the menu of '$splitName' could not be expanded: $($_.Exception.Message)" }
+                break
+            }
+            if ($opened -and (Wait-AnyName @($item) 5)) { Start-Sleep -Milliseconds 400; return (Click-Named $item 700) }
+            Log "PROBLEM: '$item' is not in the menu of '$splitName'"
+            Dump-Names "menu $splitName"
+            Press-Keys '{ESC}' 600                      # close the menu (or a dialog that opened by mistake)
+            if ($shortcut) { Log "using the keyboard shortcut $shortcut instead"; Press-Keys $shortcut 800; return $true }
+            return $false
         }
         function Wait-AutoNote([string]$text, [int]$timeoutSec) {
             $end = (Get-Date).AddSeconds($timeoutSec)
@@ -964,7 +975,7 @@ try {
 
         if (Open-Tool 'Automation' 'Add cell') {
             # an empty canvas: New (a draft from an earlier run is discarded)
-            if (Open-SplitMenu 'Save' 'New') { if (Find-Element 'Discard') { [void](Click-Named 'Discard' 700) } }
+            if (Open-SplitMenu 'Save' 'New' '^n') { if (Find-Element 'Discard') { [void](Click-Named 'Discard' 700) } }
             Save-Shot 'automation-empty'
 
             Add-AutoCell 'ping' 'Ping localhost' 'run' 'ping -n 5 127.0.0.1'
@@ -976,7 +987,7 @@ try {
             [void](Drag-Between 'Connect from ping' 'All good')
             if (Wait-AnyName @('Arrow success to ok') 5) { Log 'OK: a green success arrow ping -> ok was drawn' } else { Log 'PROBLEM: no success arrow after dragging ping -> ok'; Dump-Names 'after drag 1' }
             # the second arrow with the Connect cells menu entry: a list of the other cards, one click on the target
-            if (Open-SplitMenu 'Add cell' 'Connect cells') {
+            if (Open-SplitMenu 'Add cell' 'Connect cells' '^l') {
                 if (Wait-AnyName @('Connect to bad') 8) {
                     Save-Shot 'automation-connect-dialog'
                     [void](Click-Named 'Connect to bad' 900)
@@ -992,7 +1003,7 @@ try {
             }
 
             # the text view shows what the canvas wrote
-            if (Open-SplitMenu 'Add cell' 'Edit text') {
+            if (Open-SplitMenu 'Add cell' 'Edit text' '^e') {
                 Start-Sleep -Milliseconds 800
                 Save-Shot 'automation-text'
                 Press-Keys '{ESC}' 500

@@ -114,6 +114,11 @@ public sealed class AutomationPage : ToolPage
         AddAccelerator(Windows.System.VirtualKey.Enter, Windows.System.VirtualKeyModifiers.Control, () => { if (_selected != null) _ = StartAsync(_selected, true); });
         AddAccelerator(Windows.System.VirtualKey.Enter, Windows.System.VirtualKeyModifiers.Shift, () => { if (_selected != null) _ = StartAsync(_selected, false); });
         AddAccelerator(Windows.System.VirtualKey.S, Windows.System.VirtualKeyModifiers.Control, () => _ = SaveAsync(false));
+        AddAccelerator(Windows.System.VirtualKey.S, Windows.System.VirtualKeyModifiers.Control | Windows.System.VirtualKeyModifiers.Shift, () => _ = SaveAsync(true));
+        AddAccelerator(Windows.System.VirtualKey.N, Windows.System.VirtualKeyModifiers.Control, () => _ = NewAsync());
+        AddAccelerator(Windows.System.VirtualKey.O, Windows.System.VirtualKeyModifiers.Control, () => _ = OpenFileAsync());
+        AddAccelerator(Windows.System.VirtualKey.L, Windows.System.VirtualKeyModifiers.Control, () => _ = OpenConnectAsync(null));
+        AddAccelerator(Windows.System.VirtualKey.E, Windows.System.VirtualKeyModifiers.Control, () => _ = OpenTextAsync());
 
         Loaded += (_, _) => Hook();
         Unloaded += (_, _) => Unhook();
@@ -130,9 +135,9 @@ public sealed class AutomationPage : ToolPage
 
     private void BuildLayout()
     {
-        _btnNew = Item("", "New", () => _ = NewAsync());
-        _btnOpen = Item("", "Open", () => _ = OpenFileAsync());
-        _btnSaveAs = Item("", "Save as", () => _ = SaveAsync(true));
+        _btnNew = Item("", "New", () => _ = NewAsync(), "Ctrl+N");
+        _btnOpen = Item("", "Open", () => _ = OpenFileAsync(), "Ctrl+O");
+        _btnSaveAs = Item("", "Save as", () => _ = SaveAsync(true), "Ctrl+Shift+S");
         _btnSave = Split("", "Save", () => _ = SaveAsync(false), false, "Save (Ctrl+S). The arrow: Save as, Open, New.", _btnSaveAs, new MenuFlyoutSeparator(), _btnOpen, _btnNew);
 
         _btnUndo = ActionBtn("", "Undo", () => AutomationSession.UndoLast());
@@ -143,9 +148,9 @@ public sealed class AutomationPage : ToolPage
         _btnStart = Split("", "Start", () => _ = StartAsync(null, false), true, "Run the whole automation and show the log (F5). The arrow: run quietly, run one cell.", _btnQuiet, new MenuFlyoutSeparator(), _btnRunCell, _btnRunFrom);
         _btnStop = ActionBtn("", "Stop", () => AutomationSession.Stop());
 
-        _btnConnect = Item("", "Connect cells", () => _ = OpenConnectAsync(null), "Pick the two cells from a list");
+        _btnConnect = Item("", "Connect cells", () => _ = OpenConnectAsync(null), "Pick the two cells from a list (Ctrl+L)");
         _btnSettings = Item("", "Cell settings", () => { if (_selected != null) _ = OpenInspectorAsync(_selected); }, "F2, or just click the card");
-        _btnText = Item("", "Edit text", () => _ = OpenTextAsync(), "Edit the .automation text directly");
+        _btnText = Item("", "Edit text", () => _ = OpenTextAsync(), "Edit the .automation text directly (Ctrl+E)");
         _btnAdd = Split("", "Add cell", () => _ = AddCellAsync(), false, "Add a card. The arrow: connect cells, settings, edit text.", _btnConnect, _btnSettings, _btnText);
 
         _btnZoomOut = Item("", "Zoom out", () => Zoom(1 / 1.25f));
@@ -713,15 +718,65 @@ public sealed class AutomationPage : ToolPage
     // ───────── arrows ─────────
 
     private static Windows.UI.Color ArrowColor(AutoArrow a)
-        => a.When != null ? Orange : a.Kind switch { ArrowKind.Success => Green, ArrowKind.Failure => Red, _ => Grey };
+    {
+        var custom = AutoArrow.ParseColor(a.Color);
+        if (custom != null) return ColorHelper.FromArgb(255, custom.Value.R, custom.Value.G, custom.Value.B);
+        if (a.When != null) return Orange;
+        if (a.ExitCode != null || a.Contains != null) return Blue;
+        return a.Kind switch { ArrowKind.Success => Green, ArrowKind.Failure => Red, _ => Grey };
+    }
+
+    /// <summary>White or black text, whichever is easier to read on this arrow color.</summary>
+    private static Windows.UI.Color TextOn(Windows.UI.Color c)
+        => 0.299 * c.R + 0.587 * c.G + 0.114 * c.B > 160 ? Colors.Black : Colors.White;
+
+    private static string Short(string text, int max)
+    {
+        var t = Flat(text);
+        return t.Length > max ? t[..max] + "…" : t;
+    }
 
     private static string BadgeText(AutoArrow a)
     {
-        var word = a.Kind switch { ArrowKind.Success => "success", ArrowKind.Failure => "failure", _ => "always" };
-        if (a.When == null) return word;
-        var cond = Flat(a.When);
-        if (cond.Length > 26) cond = cond[..26] + "…";
-        return a.Kind == ArrowKind.Always ? "when " + cond : word + " · when " + cond;
+        if (!string.IsNullOrWhiteSpace(a.Name)) return Short(a.Name, 30);
+        var extra = a.When != null || a.ExitCode != null || a.Contains != null;
+        var parts = new List<string>();
+        if (a.Kind != ArrowKind.Always || !extra) parts.Add(a.Kind switch { ArrowKind.Success => "success", ArrowKind.Failure => "failure", _ => "always" });
+        if (a.ExitCode != null) parts.Add("exit " + a.ExitCode.Value);
+        if (a.Contains != null) parts.Add("contains " + Short(a.Contains, 18));
+        if (a.When != null) parts.Add("when " + Short(a.When, 26));
+        return string.Join(" · ", parts);
+    }
+
+    /// <summary>One arrow, planned before drawing: which side it leaves and enters, and how far along that side.</summary>
+    private sealed class ArrowPlan
+    {
+        public AutoCell Cell = null!;
+        public CardView From = null!, To = null!;
+        public AutoArrow Arrow = null!;
+        public int Index;
+        public Side Out, In;
+        public double OutOff, InOff;
+    }
+
+    private static double CenterAlong(CardView v, Side side)
+        => side is Side.Right or Side.Left ? Canvas.GetTop(v.Root) + CardH / 2 : Canvas.GetLeft(v.Root) + CardW / 2;
+
+    /// <summary>Arrows that use the same side of a card are spread along that side (in the order of where they go), so they never run on top of each other.</summary>
+    private static void Spread(IEnumerable<IGrouping<(string, Side), ArrowPlan>> groups, bool outgoing)
+    {
+        foreach (var g in groups)
+        {
+            var side = g.Key.Item2;
+            var list = g.OrderBy(p => CenterAlong(outgoing ? p.To : p.From, side)).ThenBy(p => p.Index).ToList();
+            var len = side is Side.Right or Side.Left ? CardH : CardW;
+            var step = Math.Min(34, (len - 50) / Math.Max(1, list.Count - 1));
+            for (var k = 0; k < list.Count; k++)
+            {
+                var off = (k - (list.Count - 1) / 2.0) * step;
+                if (outgoing) list[k].OutOff = off; else list[k].InOff = off;
+            }
+        }
     }
 
     private void DrawArrows(bool applyCursor = true)
@@ -741,34 +796,53 @@ public sealed class AutomationPage : ToolPage
             PlaceHandle(hv);
         }
 
+        var plans = new List<ArrowPlan>();
         foreach (var c in AutomationSession.Doc.Cells)
         {
             if (!_cards.TryGetValue(c.Id, out var from)) continue;
-            var groups = c.Out.Select((arrow, index) => (Arrow: arrow, Index: index)).GroupBy(t => t.Arrow.To.ToLowerInvariant());
-            foreach (var g in groups)
+            for (var i = 0; i < c.Out.Count; i++)
             {
-                var list = g.ToList();
-                for (var k = 0; k < list.Count; k++) DrawArrow(c, from, list[k].Arrow, list[k].Index, k, list.Count);
+                if (!_cards.TryGetValue(c.Out[i].To, out var to)) continue;
+                var outSide = SideToward(Canvas.GetLeft(from.Root) + CardW / 2, Canvas.GetTop(from.Root) + CardH / 2, Canvas.GetLeft(to.Root) + CardW / 2, Canvas.GetTop(to.Root) + CardH / 2);
+                plans.Add(new ArrowPlan { Cell = c, From = from, To = to, Arrow = c.Out[i], Index = i, Out = outSide, In = Opposite(outSide) });
             }
         }
+        Spread(plans.GroupBy(p => (p.Cell.Id.ToLowerInvariant(), p.Out)), true);
+        Spread(plans.GroupBy(p => (p.Arrow.To.ToLowerInvariant(), p.In)), false);
+        _badgeRects.Clear();
+        foreach (var plan in plans) DrawArrow(plan);
         if (applyCursor) CursorHelper.ApplyHandCursorToButtons(_canvas);
     }
 
-    private void DrawArrow(AutoCell c, CardView from, AutoArrow a, int index, int k, int n)
-    {
-        if (!_cards.TryGetValue(a.To, out var to)) return;
+    private readonly List<Rect> _badgeRects = new();
 
-        // leave through the side that faces the target and enter through the opposite side: a cell below gets an arrow going down
+    private static Point BezierAt(Point p0, Point p1, Point p2, Point p3, double t)
+    {
+        var u = 1 - t;
+        return new Point(
+            u * u * u * p0.X + 3 * u * u * t * p1.X + 3 * u * t * t * p2.X + t * t * t * p3.X,
+            u * u * u * p0.Y + 3 * u * u * t * p1.Y + 3 * u * t * t * p2.Y + t * t * t * p3.Y);
+    }
+
+    private void DrawArrow(ArrowPlan plan)
+    {
+        var c = plan.Cell;
+        var from = plan.From;
+        var to = plan.To;
+        var a = plan.Arrow;
+        var index = plan.Index;
+
+        // leave through the side that faces the target and enter through the opposite side: a cell below gets an arrow going down.
+        // Arrows that share a side were already spread along it (plan.OutOff / plan.InOff).
         var sx = Canvas.GetLeft(from.Root);
         var sy = Canvas.GetTop(from.Root);
         var tx = Canvas.GetLeft(to.Root);
         var ty = Canvas.GetTop(to.Root);
-        var outSide = SideToward(sx + CardW / 2, sy + CardH / 2, tx + CardW / 2, ty + CardH / 2);
-        var inSide = Opposite(outSide);
-        var off = (k - (n - 1) / 2.0) * 34;
-        var p0 = AnchorOf(sx, sy, outSide, off);
-        var p3 = AnchorOf(tx, ty, inSide, off);
-        var reach = Math.Max(50, Math.Sqrt((p3.X - p0.X) * (p3.X - p0.X) + (p3.Y - p0.Y) * (p3.Y - p0.Y)) / 2.5);
+        var outSide = plan.Out;
+        var inSide = plan.In;
+        var p0 = AnchorOf(sx, sy, outSide, plan.OutOff);
+        var p3 = AnchorOf(tx, ty, inSide, plan.InOff);
+        var reach = Math.Clamp(Math.Sqrt((p3.X - p0.X) * (p3.X - p0.X) + (p3.Y - p0.Y) * (p3.Y - p0.Y)) / 2.5, 50, 160);
         var n0 = NormalOf(outSide);
         var n1 = NormalOf(inSide);
         var p1 = new Point(p0.X + n0.X * reach, p0.Y + n0.Y * reach);
@@ -806,12 +880,11 @@ public sealed class AutomationPage : ToolPage
             },
         };
 
-        var mid = new Point((p0.X + 3 * p1.X + 3 * p2.X + p3.X) / 8, (p0.Y + 3 * p1.Y + 3 * p2.Y + p3.Y) / 8);
         var fill = Solid(color);
         var none = Solid(Colors.Transparent);
         var badge = new Button
         {
-            Content = new TextBlock { Text = BadgeText(a), FontSize = 11, Foreground = Solid(Colors.White), MaxLines = 1 },
+            Content = new TextBlock { Text = BadgeText(a), FontSize = 11, Foreground = Solid(TextOn(color)), MaxLines = 1 },
             Padding = new Thickness(8, 2, 8, 2), MinHeight = 0, MinWidth = 0, CornerRadius = new CornerRadius(10),
             BorderThickness = new Thickness(0), Background = fill, Opacity = opacity,
         };
@@ -824,8 +897,21 @@ public sealed class AutomationPage : ToolPage
         var fromId = c.Id;
         badge.Click += (_, _) => _ = OpenArrowEditorAsync(fromId, index);
         badge.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        Canvas.SetLeft(badge, mid.X - badge.DesiredSize.Width / 2);
-        Canvas.SetTop(badge, mid.Y - badge.DesiredSize.Height / 2);
+        // the label sits on the line, at the first spot where it does not cover another label
+        var bw = badge.DesiredSize.Width;
+        var bh = badge.DesiredSize.Height;
+        Point mid = BezierAt(p0, p1, p2, p3, 0.5);
+        foreach (var t in new[] { 0.5, 0.38, 0.62, 0.28, 0.72, 0.2, 0.8 })
+        {
+            var cand = BezierAt(p0, p1, p2, p3, t);
+            var r = new Rect(cand.X - bw / 2 - 3, cand.Y - bh / 2 - 3, bw + 6, bh + 6);
+            if (_badgeRects.Any(o => r.X < o.X + o.Width && o.X < r.X + r.Width && r.Y < o.Y + o.Height && o.Y < r.Y + r.Height)) continue;
+            mid = cand;
+            break;
+        }
+        _badgeRects.Add(new Rect(mid.X - bw / 2 - 3, mid.Y - bh / 2 - 3, bw + 6, bh + 6));
+        Canvas.SetLeft(badge, mid.X - bw / 2);
+        Canvas.SetTop(badge, mid.Y - bh / 2);
 
         Canvas.SetZIndex(path, 0);
         Canvas.SetZIndex(head, 0);
@@ -908,7 +994,7 @@ public sealed class AutomationPage : ToolPage
         return null;
     }
 
-    private void ConnectCells(string from, string to, ArrowKind? forced = null)
+    private void ConnectCells(string from, string to, ArrowKind? forced = null, bool custom = false)
     {
         var chosen = ArrowKind.Success;
         var ok = AutomationSession.TryEdit(f =>
@@ -918,7 +1004,7 @@ public sealed class AutomationPage : ToolPage
             chosen = forced ?? (!c.Out.Any(a => a.Kind == ArrowKind.Success) ? ArrowKind.Success
                    : !c.Out.Any(a => a.Kind == ArrowKind.Failure) ? ArrowKind.Failure
                    : ArrowKind.Always);
-            if (c.Out.Any(a => a.Kind == chosen && a.When == null && a.To.Equals(target.Id, StringComparison.OrdinalIgnoreCase)))
+            if (!custom && c.Out.Any(a => a.Kind == chosen && a.IsPlain && a.To.Equals(target.Id, StringComparison.OrdinalIgnoreCase)))
                 throw new InvalidOperationException("That arrow already exists.");
             c.Out.Add(new AutoArrow { Kind = chosen, To = target.Id });
         }, out var error);
@@ -927,6 +1013,11 @@ public sealed class AutomationPage : ToolPage
         {
             var word = chosen switch { ArrowKind.Success => "success (green)", ArrowKind.Failure => "failure (red)", _ => "always (grey)" };
             Say($"Arrow added: {word}. Click its label to change when it fires.", InfoBarSeverity.Informational);
+            if (custom)
+            {
+                var n = AutomationSession.Doc.Find(from)?.Out.Count ?? 0;
+                if (n > 0) _ = OpenArrowEditorAsync(from, n - 1);   // your own condition, color and name
+            }
         }
         else Say(error, InfoBarSeverity.Warning);
     }
@@ -1050,14 +1141,24 @@ public sealed class AutomationPage : ToolPage
 
     private static TextBlock Note(string text) => new() { Text = text, Opacity = 0.7, FontSize = 12, TextWrapping = TextWrapping.Wrap };
 
-    /// <summary>One arrow in a list: type, optional "only if this command exits 0", target, delete.</summary>
+    /// <summary>One arrow in a list: type, target, and the optional own conditions, text and color.</summary>
     private sealed class ArrowRow
     {
-        public readonly Grid Root = new() { ColumnSpacing = 8 };
-        public readonly ComboBox Kind = new() { MinWidth = 190 };
-        public readonly TextBox When = new() { PlaceholderText = "only if this command exits 0 (optional)", IsSpellCheckEnabled = false, FontFamily = new FontFamily("Consolas"), HorizontalAlignment = HorizontalAlignment.Stretch };
-        public readonly ComboBox Target = new() { MinWidth = 150 };
-        public readonly Button Delete = new() { Content = new FontIcon { Glyph = "", FontSize = 14 } };
+        public readonly Border Root = new() { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(10, 8, 10, 10) };
+        public readonly ComboBox Kind = new() { MinWidth = 190, Header = "Fires when the cell ends" };
+        public readonly TextBox When = new() { Header = "Only if this command exits 0 (optional; reads ASD_EXIT_CODE and ASD_OUTPUT)", PlaceholderText = "e.g. powershell -c \"exit 0\"", IsSpellCheckEnabled = false, FontFamily = new FontFamily("Consolas"), HorizontalAlignment = HorizontalAlignment.Stretch };
+        public readonly TextBox ExitCode = new() { Header = "Only if exit code is", PlaceholderText = "any", Width = 150, IsSpellCheckEnabled = false };
+        public readonly TextBox Contains = new() { Header = "Only if the output contains (optional)", PlaceholderText = "text, letter case ignored", IsSpellCheckEnabled = false, HorizontalAlignment = HorizontalAlignment.Stretch };
+        public readonly TextBox Name = new() { Header = "Text on the arrow (optional)", PlaceholderText = "e.g. Retry", HorizontalAlignment = HorizontalAlignment.Stretch };
+        public readonly TextBox Color = new() { Header = "Color (#RRGGBB or a name; empty = automatic)", PlaceholderText = "#8B5CF6", Width = 230, IsSpellCheckEnabled = false };
+        public readonly ComboBox Target = new() { MinWidth = 150, Header = "Goes to" };
+        public readonly Button Delete = new() { Content = new FontIcon { Glyph = "\uE74D", FontSize = 14 }, VerticalAlignment = VerticalAlignment.Bottom };
+
+        private static readonly (string Name, string Hex)[] Swatches =
+        {
+            ("green", "#22A55A"), ("red", "#E5484D"), ("orange", "#F59E0B"), ("yellow", "#EAB308"), ("teal", "#14B8A6"),
+            ("blue", "#3B82F6"), ("purple", "#8B5CF6"), ("pink", "#EC4899"), ("grey", "#8A8A8A"),
+        };
 
         public ArrowRow(IEnumerable<string> targets, AutoArrow? a, Action<ArrowRow>? onDelete)
         {
@@ -1069,20 +1170,60 @@ public sealed class AutomationPage : ToolPage
             if (a != null && Target.Items.Contains(a.To)) Target.SelectedItem = a.To;
             else if (Target.Items.Count > 0) Target.SelectedIndex = 0;
             When.Text = a?.When ?? "";
+            ExitCode.Text = a?.ExitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
+            Contains.Text = a?.Contains ?? "";
+            Name.Text = a?.Name ?? "";
+            Color.Text = a?.Color ?? "";
             ToolTipService.SetToolTip(Delete, "Delete this arrow");
             AutomationProperties.SetName(Delete, "Delete this arrow");
+            AutomationProperties.SetName(Color, "Arrow color");
+            AutomationProperties.SetName(Name, "Arrow text");
 
-            Root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            Root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            Root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            Root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            Grid.SetColumn(When, 1);
-            Grid.SetColumn(Target, 2);
-            Grid.SetColumn(Delete, 3);
-            Root.Children.Add(Kind);
-            Root.Children.Add(When);
-            Root.Children.Add(Target);
-            if (onDelete != null) { Root.Children.Add(Delete); Delete.Click += (_, _) => onDelete(this); }
+            var top = new Grid { ColumnSpacing = 8 };
+            top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(Target, 1);
+            Grid.SetColumn(Delete, 2);
+            top.Children.Add(Kind);
+            top.Children.Add(Target);
+            if (onDelete != null) { top.Children.Add(Delete); Delete.Click += (_, _) => onDelete(this); }
+            Target.HorizontalAlignment = HorizontalAlignment.Stretch;
+
+            var conditions = new Grid { ColumnSpacing = 8 };
+            conditions.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            conditions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            Grid.SetColumn(Contains, 1);
+            conditions.Children.Add(ExitCode);
+            conditions.Children.Add(Contains);
+
+            var swatches = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Bottom };
+            foreach (var (name, hex) in Swatches)
+            {
+                var c = AutoArrow.ParseColor(hex)!.Value;
+                var brush = new SolidColorBrush(ColorHelper.FromArgb(255, c.R, c.G, c.B));
+                var sw = new Button { Width = 24, Height = 24, MinWidth = 0, MinHeight = 0, Padding = new Thickness(0), CornerRadius = new CornerRadius(12), Background = brush, BorderThickness = new Thickness(0) };
+                foreach (var key in new[] { "ButtonBackground", "ButtonBackgroundPointerOver", "ButtonBackgroundPressed" }) sw.Resources[key] = brush;
+                ToolTipService.SetToolTip(sw, name);
+                AutomationProperties.SetName(sw, "Color " + name);
+                var chosen = hex;
+                sw.Click += (_, _) => Color.Text = chosen;
+                swatches.Children.Add(sw);
+            }
+            var clear = new Button { Content = "Automatic", Padding = new Thickness(8, 2, 8, 2), MinHeight = 0 };
+            clear.Click += (_, _) => Color.Text = "";
+            swatches.Children.Add(clear);
+
+            var look = new Grid { ColumnSpacing = 8 };
+            look.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            look.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(Color, 1);
+            look.Children.Add(Name);
+            look.Children.Add(Color);
+
+            Root.Child = new StackPanel { Spacing = 8, Children = { top, When, conditions, look, swatches } };
+            if (Application.Current.Resources.TryGetValue("CardStrokeColorDefaultBrush", out var stroke) && stroke is Brush b) Root.BorderBrush = b;
+            else Root.BorderBrush = new SolidColorBrush(ColorHelper.FromArgb(90, 128, 128, 128));
         }
 
         public AutoArrow ToArrow()
@@ -1090,10 +1231,31 @@ public sealed class AutomationPage : ToolPage
             var to = Target.SelectedItem as string ?? "";
             if (to.Length == 0) throw new InvalidOperationException("An arrow has no target cell.");
             var when = When.Text.Trim();
+            int? code = null;
+            var codeText = ExitCode.Text.Trim();
+            if (codeText.Length > 0)
+            {
+                if (!int.TryParse(codeText, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var n))
+                    throw new InvalidOperationException($"\"{codeText}\" is not a number: write the exit code, e.g. 2, or leave the box empty.");
+                code = n;
+            }
+            var colorText = Color.Text.Trim();
+            string? color = null;
+            if (colorText.Length > 0)
+            {
+                color = AutoArrow.NormalizeColor(colorText);
+                if (color == null) throw new InvalidOperationException($"\"{colorText}\" is not a color: write it like #8B5CF6, or a name such as orange, blue, purple.");
+            }
+            var contains = Contains.Text.Replace("\r", " ").Replace("\n", " ").Trim();
+            var name = Name.Text.Replace("\r", " ").Replace("\n", " ").Trim();
             return new AutoArrow
             {
                 Kind = Kind.SelectedIndex switch { 0 => ArrowKind.Success, 1 => ArrowKind.Failure, _ => ArrowKind.Always },
                 When = when.Length > 0 ? when : null,
+                ExitCode = code,
+                Contains = contains.Length > 0 ? contains : null,
+                Color = color,
+                Name = name.Length > 0 ? name : null,
                 To = to,
             };
         }
@@ -1129,7 +1291,7 @@ public sealed class AutomationPage : ToolPage
         foreach (var c in doc.Cells) cbFrom.Items.Add(CellLabel(c));
         cbFrom.SelectedIndex = start;
         var cbKind = new ComboBox { Header = "Arrow type", HorizontalAlignment = HorizontalAlignment.Stretch };
-        foreach (var k in new[] { "Automatic (green first, then red, then grey)", "On success (green)", "On failure (red)", "Always (grey)" }) cbKind.Items.Add(k);
+        foreach (var k in new[] { "Automatic (green first, then red, then grey)", "On success (green)", "On failure (red)", "Always (grey)", "Custom… (your own condition, color and name)" }) cbKind.Items.Add(k);
         cbKind.SelectedIndex = 0;
 
         var list = new StackPanel { Spacing = 6 };
@@ -1181,8 +1343,8 @@ public sealed class AutomationPage : ToolPage
         await ShowAsync(dlg);
 
         if (target == null) return;
-        ArrowKind? kind = cbKind.SelectedIndex switch { 1 => ArrowKind.Success, 2 => ArrowKind.Failure, 3 => ArrowKind.Always, _ => null };
-        ConnectCells(doc.Cells[Math.Max(0, cbFrom.SelectedIndex)].Id, target, kind);
+        ArrowKind? kind = cbKind.SelectedIndex switch { 1 => ArrowKind.Success, 2 => ArrowKind.Failure, 3 or 4 => ArrowKind.Always, _ => null };
+        ConnectCells(doc.Cells[Math.Max(0, cbFrom.SelectedIndex)].Id, target, kind, custom: cbKind.SelectedIndex == 4);
     }
 
     private async Task OpenInspectorAsync(string id)
@@ -1283,7 +1445,7 @@ public sealed class AutomationPage : ToolPage
             {
                 tbId, tbTitle, tbNote, cbStep, pRun, pHttp, pNotify, pWait, nbTimeout, cbJoin,
                 new TextBlock { Text = "Arrows out of this cell", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 6, 0, 0) },
-                Note("Green = on success · red = on failure · grey = always. Fill the box to add a condition: the arrow then fires only if that command exits 0 (shown in orange)."),
+                Note("Green = on success · red = on failure · grey = always. Your own conditions (all of them must be true): an exit code, a text in the output, a command that exits 0 (orange). Give the arrow your own text and color if you like."),
                 rowsPanel, addArrow, error,
             },
         };
@@ -1400,8 +1562,8 @@ public sealed class AutomationPage : ToolPage
             Children =
             {
                 Note("On success = the cell ended with exit code 0. On failure = any other exit code. Always = either way. " +
-                     "If you type a command, the arrow fires only when the cell's result matches AND that command exits 0. " +
-                     "The command can read the cell's result from the environment variables ASD_EXIT_CODE and ASD_OUTPUT."),
+                     "Add your own conditions and the arrow fires only when ALL of them are true: the exit code is a number you choose, the output contains a text, " +
+                     "and/or a command exits 0 (it can read ASD_EXIT_CODE and ASD_OUTPUT). The text and color are only for how the arrow looks."),
                 row.Root, error,
             },
         };

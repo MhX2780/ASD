@@ -388,6 +388,8 @@ internal sealed class AutomationRunner
         {
             var a = n.Out[i].Arrow;
             var match = a.Kind switch { ArrowKind.Always => true, ArrowKind.Success => o.Exit == 0, _ => o.Exit != 0 };
+            if (match && a.ExitCode != null) match = o.Exit == a.ExitCode.Value;
+            if (match && a.Contains != null) match = (o.Output ?? "").Contains(a.Contains, StringComparison.OrdinalIgnoreCase);
             if (match && a.When != null)
             {
                 try { match = await EvalWhenAsync(a.When, o, env, snap, ct); }
