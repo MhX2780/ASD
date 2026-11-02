@@ -39,7 +39,7 @@ public sealed class AutomationPage : ToolPage
     {
         public string Id = "";
         public Border Root = null!;
-        public Border Handle = null!;
+        public Button Handle = null!;
         public TextBlock Status = null!;
         public ProgressRing Ring = null!;
         public Button Run = null!, RunFrom = null!, Cancel = null!;
@@ -411,7 +411,7 @@ public sealed class AutomationPage : ToolPage
 
     private static string Flat(string s) => s.Replace("\r", " ").Replace("\n", " ");
 
-    private static Button SmallBtn(string glyph, string tip, Action click)
+    private static Button SmallBtn(string glyph, string tip, string name, Action click)
     {
         var b = new Button
         {
@@ -419,7 +419,7 @@ public sealed class AutomationPage : ToolPage
             Padding = new Thickness(8, 4, 8, 4), MinHeight = 0, MinWidth = 0,
         };
         ToolTipService.SetToolTip(b, tip);
-        AutomationProperties.SetName(b, tip);
+        AutomationProperties.SetName(b, name);
         b.Click += (_, _) => click();
         return b;
     }
@@ -443,9 +443,9 @@ public sealed class AutomationPage : ToolPage
         };
         v.Ring = new ProgressRing { Width = 16, Height = 16, IsActive = false, Visibility = Visibility.Collapsed };
         v.Status = new TextBlock { FontSize = 12, Opacity = 0.85, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 1, Margin = new Thickness(8, 0, 0, 0) };
-        v.Run = SmallBtn("", "Run this cell only (Ctrl+Enter)", () => _ = StartAsync(id, true));
-        v.RunFrom = SmallBtn("", "Run from this cell on (Shift+Enter)", () => _ = StartAsync(id, false));
-        v.Cancel = SmallBtn("", "Cancel this cell", () => AutomationSession.CancelCell(id));
+        v.Run = SmallBtn("", "Run this cell only (Ctrl+Enter)", "Run cell " + id, () => _ = StartAsync(id, true));
+        v.RunFrom = SmallBtn("", "Run from this cell on (Shift+Enter)", "Run from cell " + id, () => _ = StartAsync(id, false));
+        v.Cancel = SmallBtn("", "Cancel this cell", "Cancel cell " + id, () => AutomationSession.CancelCell(id));
 
         var top = new Grid();
         top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -489,17 +489,23 @@ public sealed class AutomationPage : ToolPage
         v.Root.PointerReleased += Card_Released;
         v.Root.PointerCaptureLost += (_, _) => _drag = null;
 
-        v.Handle = new Border
+        var ring = dark ? Solid(ColorHelper.FromArgb(255, 43, 43, 43)) : Solid(ColorHelper.FromArgb(255, 255, 255, 255));
+        var dot = Solid(Grey);
+        v.Handle = new Button
         {
-            Width = 14, Height = 14, CornerRadius = new CornerRadius(7), Tag = id,
-            Background = Solid(Grey), BorderThickness = new Thickness(2),
-            BorderBrush = dark ? Solid(ColorHelper.FromArgb(255, 43, 43, 43)) : Solid(ColorHelper.FromArgb(255, 255, 255, 255)),
+            Width = 14, Height = 14, MinWidth = 0, MinHeight = 0, Padding = new Thickness(0), Tag = id,
+            CornerRadius = new CornerRadius(7), Background = dot, BorderThickness = new Thickness(2), BorderBrush = ring,
         };
+        foreach (var key in new[] { "ButtonBackground", "ButtonBackgroundPointerOver", "ButtonBackgroundPressed", "ButtonBackgroundDisabled" })
+            v.Handle.Resources[key] = dot;
+        foreach (var key in new[] { "ButtonBorderBrush", "ButtonBorderBrushPointerOver", "ButtonBorderBrushPressed", "ButtonBorderBrushDisabled" })
+            v.Handle.Resources[key] = ring;
         ToolTipService.SetToolTip(v.Handle, "Drag onto another cell to connect them with an arrow");
-        v.Handle.PointerPressed += Handle_Pressed;
-        v.Handle.PointerMoved += Handle_Moved;
-        v.Handle.PointerReleased += Handle_Released;
-        v.Handle.PointerCaptureLost += Handle_CaptureLost;
+        AutomationProperties.SetName(v.Handle, "Connect from " + id);
+        v.Handle.AddHandler(PointerPressedEvent, new PointerEventHandler(Handle_Pressed), true);
+        v.Handle.AddHandler(PointerMovedEvent, new PointerEventHandler(Handle_Moved), true);
+        v.Handle.AddHandler(PointerReleasedEvent, new PointerEventHandler(Handle_Released), true);
+        v.Handle.AddHandler(PointerCaptureLostEvent, new PointerEventHandler(Handle_CaptureLost), true);
         return v;
     }
 
@@ -733,7 +739,7 @@ public sealed class AutomationPage : ToolPage
 
     private void Handle_Pressed(object sender, PointerRoutedEventArgs e)
     {
-        var h = (Border)sender;
+        var h = (FrameworkElement)sender;
         if (!e.GetCurrentPoint(_canvas).Properties.IsLeftButtonPressed) return;
         e.Handled = true;
         if (AutomationSession.Running) { Say("Stop the run before changing arrows.", InfoBarSeverity.Warning); return; }
@@ -1331,8 +1337,15 @@ public sealed class AutomationPage : ToolPage
             var id = "cell" + n;
             while (doc.Find(id) != null) id = "cell" + (++n);
 
-            var x = (int)(Math.Round((_scroll.HorizontalOffset + 40 + (doc.Cells.Count % 6) * 20) / 10) * 10);
-            var y = (int)(Math.Round((_scroll.VerticalOffset + 40 + (doc.Cells.Count % 6) * 20) / 10) * 10);
+            // first free place on a grid (300 x 150), so a new card never lands on top of another one
+            var x = 40;
+            var y = 40;
+            for (var slot = 0; slot < 400; slot++)
+            {
+                x = 40 + (slot % 4) * 300;
+                y = 40 + (slot / 4) * 150;
+                if (!doc.Cells.Any(o => Math.Abs(o.X - x) < 260 && Math.Abs(o.Y - y) < 130)) break;
+            }
             var ok = AutomationSession.TryEdit(f => f.Cells.Add(new AutoCell
             {
                 Id = id, Title = "New cell", Step = StepKind.Run, Command = "echo hello", X = x, Y = y,

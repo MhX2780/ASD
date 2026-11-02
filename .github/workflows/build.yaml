@@ -9,7 +9,7 @@ on:
         description: 'What the demo video does'
         type: choice
         default: notifications
-        options: [notifications, keys, all]
+        options: [notifications, keys, automation, all]
 
 permissions:
   contents: write

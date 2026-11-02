@@ -18,7 +18,7 @@ param(
     [Parameter(Mandatory)] [string] $OutFile,
     [string] $LogFile = (Join-Path $env:RUNNER_TEMP 'record-demo-log.txt'),
     [int] $Fps = 60,   # the runner display is 60 Hz, so more than 60 adds nothing
-    [ValidateSet('notifications','keys','all')] [string] $Scenario = 'notifications',   # notifications = bell + local test server only; keys = Keys Store tour; all = both
+    [ValidateSet('notifications','keys','automation','all')] [string] $Scenario = 'notifications',   # notifications = bell + local test server only; keys = Keys Store tour; automation = only the Automation page; all = everything
     [double] $PauseScale = 0.4,   # 1 = slow (old speed), 0.4 = fast. Scales every wait after a click
     [string] $UpdateInfoUrl = 'https://github.com/MhX2780/ASD/releases/download/latest/update.txt',   # same URL the app checks
     [ValidateSet('light','dark','auto')] [string] $AppTheme = 'light',   # the app's own theme setting at start (the video starts in this theme)
@@ -611,7 +611,7 @@ try {
         $toggle = Find-PaneToggle
         if ($toggle) { Click-Toggle $toggle 1000 } else { Log 'pane toggle button not found (see the title-bar button list above)' }
     }
-    if ($Scenario -ne 'notifications') {
+    if ($Scenario -in 'keys','all') {
     [void](Click-Named 'Keys Store' 900)
 
     # 1) four keys, each with its own icon (the first one also creates the vault + master password)
@@ -752,7 +752,7 @@ try {
 
     }   # end of the Keys Store tour
 
-    if ($Scenario -ne 'keys') {
+    if ($Scenario -in 'notifications','all') {
     try {
     # Whatever happened before: close any dialog that is still open, so this test always starts from a clean page.
     Press-Keys '{ESC}' 400; Press-Keys '{ESC}' 400
@@ -886,22 +886,124 @@ try {
 
     }   # end of the notifications test
 
-    # Automation page: create the example, press Start, look at the canvas (screenshots show cards, arrows and results)
+    # AUTOMATION: build an automation by hand through the page (3 cells, 2 arrows dragged between them), press Start,
+    # leave the window while it runs (the Notification cell must reach Windows), come back and check the results.
+    if ($Scenario -ne 'keys') {
     try {
+        Press-Keys '{ESC}' 400; Press-Keys '{ESC}' 400
+        $autoNotes = Join-Path $settingsDir 'notifications.log'
+        $autoDraft = Join-Path $settingsDir 'automation-draft.automation'
+        $autoRunLog = Join-Path $settingsDir 'automation.log'
+        $fId = 'Id (arrows and {{id.exitcode}} use it; letters, digits, - and _)'
+        $fTitle = 'Title (big text on the card)'
+        $fCmd = 'Command (runs with cmd.exe, under your Windows account)'
+        $fText = 'Text of the notification'
+
+        function Set-Box([string]$field, [string]$text) {      # click into the box, select what is there, type
+            Fill-Field $field ''
+            Press-Keys '^a' 120
+            Type-Text $text 10
+        }
+        function Choose-Item([string]$combo, [string]$item) {  # open a drop-down and pick an entry
+            if (Click-Named $combo 500) {
+                if (-not (Click-Named $item 600)) { Log "PROBLEM: '$item' was not in the drop-down '$combo'" }
+            }
+        }
+        function Add-AutoCell([string]$id, [string]$title, [string]$kind, [string]$value) {
+            if (-not (Click-Named 'Add cell' 900)) { Log "PROBLEM: the Add cell button was not found ($id)"; return }
+            if (-not (Wait-AnyName @($fId) 10)) { Log "PROBLEM: the cell settings dialog did not open ($id)"; Dump-Names 'cell settings'; return }
+            Set-Box $fId $id
+            Set-Box $fTitle $title
+            if ($kind -eq 'notify') {
+                Choose-Item 'What this cell does' 'Notification'
+                Set-Box $fText $value
+            } else {
+                Set-Box $fCmd $value
+            }
+            Save-Shot "automation-dialog-$id"
+            if (-not (Click-Named 'Apply' 900)) { Log "PROBLEM: the Apply button was not found ($id)" }
+            if (Wait-AnyName @($title) 8) { Log "OK: the card '$title' is on the canvas" } else { Log "PROBLEM: the card '$title' did not appear"; Dump-Names 'automation canvas' }
+        }
+        function Drag-Between([string]$handleName, [string]$targetText) {   # drag the dot of one card onto another card
+            $h = Find-Element $handleName
+            $t = Find-Element $targetText
+            if (-not $h -or -not $t) { Log "PROBLEM: cannot drag '$handleName' -> '$targetText' (handle: $([bool]$h), target: $([bool]$t))"; return $false }
+            $hx = [int]($h.Rect.X + $h.Rect.Width / 2); $hy = [int]($h.Rect.Y + $h.Rect.Height / 2)
+            $tx = [int]($t.Rect.X + $t.Rect.Width / 2); $ty = [int]($t.Rect.Y + $t.Rect.Height / 2)
+            Move-Mouse $hx $hy 12
+            Start-Sleep -Milliseconds 250
+            [Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)      # left down on the dot
+            Start-Sleep -Milliseconds 200
+            Move-Mouse $tx $ty 30
+            Start-Sleep -Milliseconds 300
+            Save-Shot "automation-dragging-$($targetText -replace '[^A-Za-z]', '')"
+            [Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)      # left up on the other card
+            Start-Sleep -Milliseconds 900
+            return $true
+        }
+        function Wait-AutoNote([string]$text, [int]$timeoutSec) {
+            $end = (Get-Date).AddSeconds($timeoutSec)
+            while ((Get-Date) -lt $end) {
+                if ((Test-Path $autoNotes) -and (Select-String -Path $autoNotes -Pattern $text -SimpleMatch -Quiet)) { return $true }
+                Start-Sleep -Milliseconds 500
+            }
+            return $false
+        }
+
         if (Open-Tool 'Automation' 'Add cell') {
+            # an empty canvas: New (a draft from an earlier run is discarded)
+            if (Click-Named 'New' 700) { if (Find-Element 'Discard') { [void](Click-Named 'Discard' 700) } }
             Save-Shot 'automation-empty'
-            if (Click-Named 'Create an example' 900) {
+
+            Add-AutoCell 'ping' 'Ping localhost' 'run' 'ping -n 5 127.0.0.1'
+            Add-AutoCell 'ok' 'All good' 'notify' 'The ping worked'
+            Add-AutoCell 'bad' 'Ping failed' 'run' 'echo ping failed'
+            Save-Shot 'automation-three-cells'
+
+            # arrows: the first one from a cell is green (success), the second red (failure)
+            [void](Drag-Between 'Connect from ping' 'All good')
+            if (Wait-AnyName @('Arrow success to ok') 5) { Log 'OK: a green success arrow ping -> ok was drawn' } else { Log 'PROBLEM: no success arrow after dragging ping -> ok'; Dump-Names 'after drag 1' }
+            [void](Drag-Between 'Connect from ping' 'Ping failed')
+            if (Wait-AnyName @('Arrow failure to bad') 5) { Log 'OK: a red failure arrow ping -> bad was drawn' } else { Log 'PROBLEM: no failure arrow after dragging ping -> bad'; Dump-Names 'after drag 2' }
+            Save-Shot 'automation-arrows'
+
+            # the text view shows what the canvas wrote
+            if (Click-Named 'Text' 900) {
                 Start-Sleep -Milliseconds 800
-                Save-Shot 'automation-example'
-                if (Click-Named 'Start' 900) {
-                    if (Wait-AnyName @('Finished OK', 'Cancelled') 40) { Log 'OK: the example automation finished' }
-                    else { Log 'PROBLEM: the example automation did not finish in 40 s'; Dump-Names 'automation run' }
-                    Start-Sleep -Milliseconds 800
-                    Save-Shot 'automation-run'
-                } else { Log 'PROBLEM: the Start button of Automation was not found' }
-            } else { Log 'PROBLEM: the Create an example button was not found'; Dump-Names 'automation page' }
+                Save-Shot 'automation-text'
+                Press-Keys '{ESC}' 500
+                [void](Click-Named 'Cancel' 500)
+            }
+            if (Test-Path $autoDraft) {
+                $draft = Get-Content $autoDraft -Raw
+                if ($draft -match 'success -> ok' -and $draft -match 'failure -> bad') { Log 'OK: the draft text has both arrows' } else { Log 'PROBLEM: the draft text is missing an arrow' }
+                $draft -split "`n" | ForEach-Object { Log "automation-draft: $_" }
+            } else { Log 'PROBLEM: automation-draft.automation was not written' }
+
+            # Start, then leave the window: the Notification cell runs while ASD is NOT the active window -> Windows toast
+            Remove-Item $autoRunLog -Force -ErrorAction SilentlyContinue
+            if (Click-Named 'Start' 300) {
+                $away = Go-Away
+                if (Wait-AutoNote 'All good' 40) { Log 'OK: the Notification cell posted its notification' } else { Log 'PROBLEM: no notification from the Notification cell after 40 s' }
+                Start-Sleep -Milliseconds 1500
+                Save-Shot 'automation-toast'
+                Come-Back $away
+                if (Wait-AnyName @('Finished OK') 30) { Log 'OK: the automation finished' } else { Log 'PROBLEM: the automation did not report "Finished OK"'; Dump-Names 'automation run' }
+                if (Find-Element 'skipped') { Log 'OK: the failure branch (Ping failed) was skipped' } else { Log 'PROBLEM: no card shows "skipped"' }
+                Save-Shot 'automation-run'
+            } else { Log 'PROBLEM: the Start button of Automation was not found' }
+            if (Test-Path $autoRunLog) {
+                Get-Content $autoRunLog | ForEach-Object { Log "automation.log: $_" }
+            } else { Log 'PROBLEM: automation.log was not written' }
+
+            # "Run this cell only" on the last card (no arrow is followed)
+            if (Click-Named 'Run cell bad' 300) {
+                if (Wait-AnyName @('The cell finished OK') 15) { Log 'OK: Run this cell only worked' } else { Log 'PROBLEM: Run this cell only did not finish'; Dump-Names 'single cell' }
+                Save-Shot 'automation-single'
+            } else { Log 'PROBLEM: the Run cell bad button was not found' }
         }
     } catch { Log "ERROR in the Automation scene: $($_.Exception.Message)" }
+    }   # end of the Automation scene
 
     Log 'scenario finished'
 }
