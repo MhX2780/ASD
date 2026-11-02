@@ -963,9 +963,21 @@ try {
             # arrows: the first one from a cell is green (success), the second red (failure)
             [void](Drag-Between 'Connect from ping' 'All good')
             if (Wait-AnyName @('Arrow success to ok') 5) { Log 'OK: a green success arrow ping -> ok was drawn' } else { Log 'PROBLEM: no success arrow after dragging ping -> ok'; Dump-Names 'after drag 1' }
-            [void](Drag-Between 'Connect from ping' 'Ping failed')
+            # the second arrow with the Connect button: a list of the other cards, one click on the target
+            if (Click-Named 'Connect' 900) {
+                if (Wait-AnyName @('Connect to bad') 8) {
+                    Save-Shot 'automation-connect-dialog'
+                    [void](Click-Named 'Connect to bad' 900)
+                } else { Log 'PROBLEM: the Connect dialog did not list the other cards'; Dump-Names 'connect dialog' }
+            } else { Log 'PROBLEM: the Connect button was not found' }
             if (Wait-AnyName @('Arrow failure to bad') 5) { Log 'OK: a red failure arrow ping -> bad was drawn' } else { Log 'PROBLEM: no failure arrow after dragging ping -> bad'; Dump-Names 'after drag 2' }
             Save-Shot 'automation-arrows'
+
+            # a click on a card shows its settings
+            if (Click-Named 'Ping localhost' 900) {
+                if (Wait-AnyName @($fId) 6) { Log 'OK: a click on a card opened its settings'; Save-Shot 'automation-card-settings'; [void](Click-Named 'Cancel' 600) }
+                else { Log 'PROBLEM: a click on a card did not open its settings'; Dump-Names 'card click' }
+            }
 
             # the text view shows what the canvas wrote
             if (Click-Named 'Text' 900) {

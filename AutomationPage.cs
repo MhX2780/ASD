@@ -74,12 +74,14 @@ public sealed class AutomationPage : ToolPage
     private readonly StackPanel _empty;
 
     private Button _btnNew = null!, _btnOpen = null!, _btnSave = null!, _btnSaveAs = null!, _btnUndo = null!, _btnAdd = null!,
-                   _btnStart = null!, _btnStop = null!, _btnSettings = null!, _btnText = null!, _btnLog = null!;
+                   _btnStart = null!, _btnStop = null!, _btnConnect = null!, _btnSettings = null!, _btnText = null!, _btnLog = null!;
 
     private string? _selected;
     private DragInfo? _drag;
     private PanInfo? _pan;
     private string? _linkFrom;
+    private Point _linkStart;
+    private bool _linkMoved;
     private Shapes.Path? _linkPath;
     private bool _dialogOpen;
     private bool _bannerShown;
@@ -126,6 +128,8 @@ public sealed class AutomationPage : ToolPage
         _btnUndo = ActionBtn("", "Undo", () => AutomationSession.UndoLast());
         _btnAdd = ActionBtn("", "Add cell", () => _ = AddCellAsync());
         _btnSettings = ActionBtn("", "Cell settings", () => { if (_selected != null) _ = OpenInspectorAsync(_selected); });
+        _btnConnect = ActionBtn("", "Connect", () => _ = OpenConnectAsync(null));
+        ToolTipService.SetToolTip(_btnConnect, "Connect two cells with an arrow: pick the cells from a list");
         _btnText = ActionBtn("", "Text", () => _ = OpenTextAsync());
         _btnStart = ActionBtn("", "Start", () => _ = StartAsync(null, false), accent: true);
         _btnStop = ActionBtn("", "Stop", () => AutomationSession.Stop());
@@ -135,7 +139,7 @@ public sealed class AutomationPage : ToolPage
         ToolTipService.SetToolTip(_btnText, "Edit the .automation text directly");
 
         var bar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
-        foreach (var b in new UIElement[] { _btnNew, _btnOpen, _btnSave, _btnSaveAs, _btnUndo, Separator(), _btnAdd, _btnSettings, _btnText, Separator(), _btnStart, _btnStop, Separator(), _btnLog })
+        foreach (var b in new UIElement[] { _btnNew, _btnOpen, _btnSave, _btnSaveAs, _btnUndo, Separator(), _btnAdd, _btnConnect, _btnSettings, _btnText, Separator(), _btnStart, _btnStop, Separator(), _btnLog })
             bar.Children.Add(b);
         var barScroll = new ScrollViewer
         {
@@ -484,10 +488,6 @@ public sealed class AutomationPage : ToolPage
             Background = dark ? Solid(ColorHelper.FromArgb(255, 43, 43, 43)) : Solid(ColorHelper.FromArgb(255, 255, 255, 255)),
         };
         ToolTipService.SetToolTip(v.Root, $"{c.Display}  (id: {c.Id})\n{StepSummary(c)}\nClick for settings · drag to move");
-        v.Root.PointerPressed += Card_Pressed;
-        v.Root.PointerMoved += Card_Moved;
-        v.Root.PointerReleased += Card_Released;
-        v.Root.PointerCaptureLost += (_, _) => _drag = null;
 
         var ring = dark ? Solid(ColorHelper.FromArgb(255, 43, 43, 43)) : Solid(ColorHelper.FromArgb(255, 255, 255, 255));
         var dot = Solid(Grey);
@@ -579,6 +579,7 @@ public sealed class AutomationPage : ToolPage
         _btnSaveAs.IsEnabled = !AutomationSession.Invalid;
         _btnAdd.IsEnabled = !s && !AutomationSession.Invalid;
         _btnText.IsEnabled = !s;
+        _btnConnect.IsEnabled = !s && !AutomationSession.Invalid && AutomationSession.Doc.Cells.Count >= 2;
         _btnSettings.IsEnabled = _selected != null && !s;
     }
 
@@ -694,49 +695,6 @@ public sealed class AutomationPage : ToolPage
 
     // ───────── mouse: cards, connecting, panning ─────────
 
-    private void Card_Pressed(object sender, PointerRoutedEventArgs e)
-    {
-        var card = (Border)sender;
-        var pt = e.GetCurrentPoint(_canvas);
-        if (!pt.Properties.IsLeftButtonPressed) return;
-        var id = (string)card.Tag;
-        _drag = new DragInfo { Id = id, Start = pt.Position, X0 = Canvas.GetLeft(card), Y0 = Canvas.GetTop(card) };
-        card.CapturePointer(e.Pointer);
-        Select(id);
-        e.Handled = true;
-    }
-
-    private void Card_Moved(object sender, PointerRoutedEventArgs e)
-    {
-        if (_drag == null || !_cards.TryGetValue(_drag.Id, out var v) || !ReferenceEquals(sender, v.Root)) return;
-        var p = e.GetCurrentPoint(_canvas).Position;
-        var dx = p.X - _drag.Start.X;
-        var dy = p.Y - _drag.Start.Y;
-        if (!_drag.Moved && Math.Abs(dx) < 4 && Math.Abs(dy) < 4) return;
-        _drag.Moved = true;
-        Place(v, Math.Max(0, Math.Round((_drag.X0 + dx) / 10) * 10), Math.Max(0, Math.Round((_drag.Y0 + dy) / 10) * 10));
-        DrawArrows(applyCursor: false);
-    }
-
-    private void Card_Released(object sender, PointerRoutedEventArgs e)
-    {
-        var d = _drag;
-        _drag = null;
-        ((UIElement)sender).ReleasePointerCapture(e.Pointer);
-        if (d == null) return;
-
-        if (d.Moved)
-        {
-            if (_cards.TryGetValue(d.Id, out var v))
-                AutomationSession.MoveCell(d.Id, (int)Canvas.GetLeft(v.Root), (int)Canvas.GetTop(v.Root));
-            UpdateCanvasSize();
-            DrawArrows();
-            RefreshFileLabel();
-        }
-        else _ = OpenInspectorAsync(d.Id);
-        e.Handled = true;
-    }
-
     private void Handle_Pressed(object sender, PointerRoutedEventArgs e)
     {
         var h = (FrameworkElement)sender;
@@ -744,6 +702,8 @@ public sealed class AutomationPage : ToolPage
         e.Handled = true;
         if (AutomationSession.Running) { Say("Stop the run before changing arrows.", InfoBarSeverity.Warning); return; }
         _linkFrom = (string)h.Tag;
+        _linkStart = e.GetCurrentPoint(_canvas).Position;
+        _linkMoved = false;
         h.CapturePointer(e.Pointer);
         _linkPath = new Shapes.Path
         {
@@ -759,6 +719,8 @@ public sealed class AutomationPage : ToolPage
     {
         if (_linkFrom == null || _linkPath == null || !_cards.TryGetValue(_linkFrom, out var v)) return;
         var p = e.GetCurrentPoint(_canvas).Position;
+        if (!_linkMoved && Math.Abs(p.X - _linkStart.X) < 4 && Math.Abs(p.Y - _linkStart.Y) < 4) return;
+        _linkMoved = true;
         var x0 = Canvas.GetLeft(v.Root) + CardW;
         var y0 = Canvas.GetTop(v.Root) + CardH / 2;
         var dx = Math.Max(40, Math.Abs(p.X - x0) / 2);
@@ -772,9 +734,11 @@ public sealed class AutomationPage : ToolPage
     private void Handle_Released(object sender, PointerRoutedEventArgs e)
     {
         var from = _linkFrom;
+        var moved = _linkMoved;
         EndLink();
         ((UIElement)sender).ReleasePointerCapture(e.Pointer);
         if (from == null) return;
+        if (!moved) { _ = OpenConnectAsync(from); e.Handled = true; return; }   // a click on the dot: choose the target from a list
         var target = CardAt(e.GetCurrentPoint(_canvas).Position);
         if (target != null && !target.Equals(from, StringComparison.OrdinalIgnoreCase)) ConnectCells(from, target);
         e.Handled = true;
@@ -799,16 +763,16 @@ public sealed class AutomationPage : ToolPage
         return null;
     }
 
-    private void ConnectCells(string from, string to)
+    private void ConnectCells(string from, string to, ArrowKind? forced = null)
     {
         var chosen = ArrowKind.Success;
         var ok = AutomationSession.TryEdit(f =>
         {
             var c = f.Find(from) ?? throw new InvalidOperationException("the cell is gone");
             var target = f.Find(to) ?? throw new InvalidOperationException("the target cell is gone");
-            chosen = !c.Out.Any(a => a.Kind == ArrowKind.Success) ? ArrowKind.Success
+            chosen = forced ?? (!c.Out.Any(a => a.Kind == ArrowKind.Success) ? ArrowKind.Success
                    : !c.Out.Any(a => a.Kind == ArrowKind.Failure) ? ArrowKind.Failure
-                   : ArrowKind.Always;
+                   : ArrowKind.Always);
             if (c.Out.Any(a => a.Kind == chosen && a.When == null && a.To.Equals(target.Id, StringComparison.OrdinalIgnoreCase)))
                 throw new InvalidOperationException("That arrow already exists.");
             c.Out.Add(new AutoArrow { Kind = chosen, To = target.Id });
@@ -822,31 +786,94 @@ public sealed class AutomationPage : ToolPage
         else Say(error, InfoBarSeverity.Warning);
     }
 
+    /// <summary>The card (cell id) that a pointer event started on, or null (empty canvas, or a button inside a card).</summary>
+    private string? CardOf(object? source)
+    {
+        var d = source as DependencyObject;
+        while (d != null && !ReferenceEquals(d, _canvas))
+        {
+            if (d is Button) return null;
+            if (d is Border b && b.Tag is string id && _cards.TryGetValue(id, out var v) && ReferenceEquals(v.Root, b)) return id;
+            d = VisualTreeHelper.GetParent(d);
+        }
+        return null;
+    }
+
+    // One place handles every press on the canvas: a card (move it, or open its settings when it was only clicked),
+    // the right mouse button or the empty canvas (move the view).
     private void Canvas_Pressed(object sender, PointerRoutedEventArgs e)
     {
-        var pt = e.GetCurrentPoint(_scroll);
-        var onEmpty = pt.Properties.IsLeftButtonPressed && ReferenceEquals(e.OriginalSource, _canvas);
-        if (!pt.Properties.IsRightButtonPressed && !onEmpty) return;
-        _pan = new PanInfo { Start = pt.Position, H = _scroll.HorizontalOffset, V = _scroll.VerticalOffset };
+        var pt = e.GetCurrentPoint(_canvas);
+        if (pt.Properties.IsLeftButtonPressed)
+        {
+            var id = CardOf(e.OriginalSource);
+            if (id != null && _cards.TryGetValue(id, out var v))
+            {
+                _drag = new DragInfo { Id = id, Start = pt.Position, X0 = Canvas.GetLeft(v.Root), Y0 = Canvas.GetTop(v.Root) };
+                Select(id);
+                _canvas.CapturePointer(e.Pointer);
+                return;
+            }
+        }
+
+        var ps = e.GetCurrentPoint(_scroll);
+        var onEmpty = ps.Properties.IsLeftButtonPressed && ReferenceEquals(e.OriginalSource, _canvas);
+        if (!ps.Properties.IsRightButtonPressed && !onEmpty) return;
+        _pan = new PanInfo { Start = ps.Position, H = _scroll.HorizontalOffset, V = _scroll.VerticalOffset };
         _canvas.CapturePointer(e.Pointer);
         if (onEmpty) Select(null);
     }
 
     private void Canvas_Moved(object sender, PointerRoutedEventArgs e)
     {
+        if (_drag != null)
+        {
+            if (!_cards.TryGetValue(_drag.Id, out var v)) return;
+            var p = e.GetCurrentPoint(_canvas).Position;
+            var dx = p.X - _drag.Start.X;
+            var dy = p.Y - _drag.Start.Y;
+            if (!_drag.Moved && Math.Abs(dx) < 4 && Math.Abs(dy) < 4) return;
+            _drag.Moved = true;
+            Place(v, Math.Max(0, Math.Round((_drag.X0 + dx) / 10) * 10), Math.Max(0, Math.Round((_drag.Y0 + dy) / 10) * 10));
+            DrawArrows(applyCursor: false);
+            return;
+        }
+
         if (_pan == null) return;
-        var p = e.GetCurrentPoint(_scroll).Position;
-        _scroll.ChangeView(_pan.H - (p.X - _pan.Start.X), _pan.V - (p.Y - _pan.Start.Y), null, true);
+        var q = e.GetCurrentPoint(_scroll).Position;
+        _scroll.ChangeView(_pan.H - (q.X - _pan.Start.X), _pan.V - (q.Y - _pan.Start.Y), null, true);
+    }
+
+    private void FinishMove(DragInfo d)
+    {
+        if (_cards.TryGetValue(d.Id, out var v))
+            AutomationSession.MoveCell(d.Id, (int)Canvas.GetLeft(v.Root), (int)Canvas.GetTop(v.Root));
+        UpdateCanvasSize();
+        DrawArrows();
+        RefreshFileLabel();
     }
 
     private void Canvas_Released(object sender, PointerRoutedEventArgs e)
     {
+        if (_drag != null)
+        {
+            var d = _drag;
+            _drag = null;
+            _canvas.ReleasePointerCapture(e.Pointer);
+            if (d.Moved) FinishMove(d);
+            else _ = OpenInspectorAsync(d.Id);          // a click on a card shows its settings
+            return;
+        }
         if (_pan == null) return;
         _pan = null;
         _canvas.ReleasePointerCapture(e.Pointer);
     }
 
-    private void Canvas_CaptureLost(object sender, PointerRoutedEventArgs e) => _pan = null;
+    private void Canvas_CaptureLost(object sender, PointerRoutedEventArgs e)
+    {
+        _pan = null;
+        if (_drag is { Moved: true } d) { _drag = null; FinishMove(d); }
+    }
 
     // ───────── dialogs ─────────
 
@@ -925,6 +952,92 @@ public sealed class AutomationPage : ToolPage
                 To = to,
             };
         }
+    }
+
+    /// <summary>Puts a dialog's content in a scroll box that is never taller than the window, so nothing is cut off.</summary>
+    private ScrollViewer Scrollable(UIElement content)
+    {
+        var h = XamlRoot?.Size.Height ?? 800;
+        return new ScrollViewer
+        {
+            Content = content,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            MaxHeight = Math.Max(240, h - 230),
+            Padding = new Thickness(0, 0, 16, 0),
+        };
+    }
+
+    private static string CellLabel(AutoCell c) => c.Title.Length > 0 && !c.Title.Equals(c.Id, StringComparison.OrdinalIgnoreCase) ? $"{c.Title}  ({c.Id})" : c.Id;
+
+    /// <summary>Connect two cells without dragging: pick the "from" cell, then click the cell the arrow should point to.</summary>
+    private async Task OpenConnectAsync(string? fromId)
+    {
+        if (_dialogOpen) return;
+        if (AutomationSession.Running) { Say("Stop the run before changing arrows.", InfoBarSeverity.Warning); return; }
+        var doc = AutomationSession.Doc;
+        if (doc.Cells.Count < 2) { Say("You need at least two cells to connect them. Click Add cell first.", InfoBarSeverity.Informational); return; }
+        fromId ??= _selected ?? doc.Cells[0].Id;
+        var start = Math.Max(0, doc.Cells.FindIndex(c => c.Id.Equals(fromId, StringComparison.OrdinalIgnoreCase)));
+
+        var cbFrom = new ComboBox { Header = "From (the result of this cell decides the arrow)", HorizontalAlignment = HorizontalAlignment.Stretch };
+        foreach (var c in doc.Cells) cbFrom.Items.Add(CellLabel(c));
+        cbFrom.SelectedIndex = start;
+        var cbKind = new ComboBox { Header = "Arrow type", HorizontalAlignment = HorizontalAlignment.Stretch };
+        foreach (var k in new[] { "Automatic (green first, then red, then grey)", "On success (green)", "On failure (red)", "Always (grey)" }) cbKind.Items.Add(k);
+        cbKind.SelectedIndex = 0;
+
+        var list = new StackPanel { Spacing = 6 };
+        string? target = null;
+        var dlg = MakeDialog("Connect cells");
+
+        void Fill()
+        {
+            list.Children.Clear();
+            var from = doc.Cells[Math.Max(0, cbFrom.SelectedIndex)];
+            foreach (var c in doc.Cells.Where(x => !ReferenceEquals(x, from)))
+            {
+                var id = c.Id;
+                var button = new Button
+                {
+                    HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left,
+                    Padding = new Thickness(12, 8, 12, 8),
+                    Content = new StackPanel
+                    {
+                        Spacing = 2,
+                        Children =
+                        {
+                            new TextBlock { Text = c.Display + "   (" + c.Id + ")", FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis },
+                            new TextBlock { Text = StepSummary(c), Opacity = 0.7, FontSize = 12, FontFamily = new FontFamily("Consolas"), TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 1 },
+                        },
+                    },
+                };
+                AutomationProperties.SetName(button, "Connect to " + id);
+                button.Click += (_, _) => { target = id; dlg.Hide(); };
+                list.Children.Add(button);
+            }
+            CursorHelper.ApplyHandCursorToButtons(list);
+        }
+        cbFrom.SelectionChanged += (_, _) => Fill();
+        Fill();
+
+        dlg.Content = Scrollable(new StackPanel
+        {
+            Spacing = 10, MinWidth = 520,
+            Children =
+            {
+                cbFrom, cbKind,
+                new TextBlock { Text = "Click the cell the arrow should point to:", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 6, 0, 0) },
+                list,
+            },
+        });
+        dlg.CloseButtonText = "Cancel";
+        dlg.Opened += (_, _) => CursorHelper.ApplyHandCursorToButtons(list);
+        await ShowAsync(dlg);
+
+        if (target == null) return;
+        ArrowKind? kind = cbKind.SelectedIndex switch { 1 => ArrowKind.Success, 2 => ArrowKind.Failure, 3 => ArrowKind.Always, _ => null };
+        ConnectCells(doc.Cells[Math.Max(0, cbFrom.SelectedIndex)].Id, target, kind);
     }
 
     private async Task OpenInspectorAsync(string id)
@@ -1031,7 +1144,7 @@ public sealed class AutomationPage : ToolPage
         };
 
         var dlg = MakeDialog("Cell: " + cell.Display);
-        dlg.Content = content;
+        dlg.Content = Scrollable(content);
         dlg.PrimaryButtonText = "Apply";
         dlg.SecondaryButtonText = "Delete cell";
         dlg.CloseButtonText = "Cancel";
@@ -1149,7 +1262,7 @@ public sealed class AutomationPage : ToolPage
         };
 
         var dlg = MakeDialog($"Arrow: {cell.Display} → {arrow.To}");
-        dlg.Content = content;
+        dlg.Content = Scrollable(content);
         dlg.PrimaryButtonText = "Apply";
         dlg.SecondaryButtonText = "Delete arrow";
         dlg.CloseButtonText = "Cancel";
@@ -1181,7 +1294,7 @@ public sealed class AutomationPage : ToolPage
         if (_dialogOpen) return;
         if (AutomationSession.Running) { Say("Stop the run to edit the text.", InfoBarSeverity.Warning); return; }
 
-        var box = Field("", AutomationSession.CurrentText(), multi: true, height: 420);
+        var box = Field("", AutomationSession.CurrentText(), multi: true, height: Math.Max(160, Math.Min(420, (XamlRoot?.Size.Height ?? 800) - 330)));
         box.MinWidth = 720;
         box.AcceptsReturn = true;
         var error = new TextBlock { Foreground = Solid(Colors.OrangeRed), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
@@ -1192,7 +1305,7 @@ public sealed class AutomationPage : ToolPage
         }
 
         var dlg = MakeDialog("Automation text");
-        dlg.Content = new StackPanel
+        dlg.Content = Scrollable(new StackPanel
         {
             Spacing = 8,
             Children =
@@ -1200,7 +1313,7 @@ public sealed class AutomationPage : ToolPage
                 Note("This is the .automation file itself. Cards and arrows are made from it when you click Apply. Comments (#) are not kept when you edit on the canvas."),
                 box, error,
             },
-        };
+        });
         dlg.PrimaryButtonText = "Apply";
         dlg.CloseButtonText = "Cancel";
         dlg.DefaultButton = ContentDialogButton.Primary;
