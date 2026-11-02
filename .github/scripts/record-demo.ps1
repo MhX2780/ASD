@@ -886,6 +886,23 @@ try {
 
     }   # end of the notifications test
 
+    # Automation page: create the example, press Start, look at the canvas (screenshots show cards, arrows and results)
+    try {
+        if (Open-Tool 'Automation' 'Add cell') {
+            Save-Shot 'automation-empty'
+            if (Click-Named 'Create an example' 900) {
+                Start-Sleep -Milliseconds 800
+                Save-Shot 'automation-example'
+                if (Click-Named 'Start' 900) {
+                    if (Wait-AnyName @('Finished OK', 'Cancelled') 40) { Log 'OK: the example automation finished' }
+                    else { Log 'PROBLEM: the example automation did not finish in 40 s'; Dump-Names 'automation run' }
+                    Start-Sleep -Milliseconds 800
+                    Save-Shot 'automation-run'
+                } else { Log 'PROBLEM: the Start button of Automation was not found' }
+            } else { Log 'PROBLEM: the Create an example button was not found'; Dump-Names 'automation page' }
+        }
+    } catch { Log "ERROR in the Automation scene: $($_.Exception.Message)" }
+
     Log 'scenario finished'
 }
 catch {

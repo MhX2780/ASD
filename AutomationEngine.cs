@@ -14,8 +14,8 @@ internal interface IAutomationHost
     void Log(string line);
     /// <summary>A cell changed state. May be called from any thread.</summary>
     void CellChanged(string id, CellState state, int? exitCode);
-    /// <summary>An arrow was decided: fired (true) or not (false).</summary>
-    void ArrowChanged(string from, string to, bool fired);
+    /// <summary>An arrow was decided: fired (true) or not (false). It is the index-th arrow of cell "from" (same order as AutoCell.Out).</summary>
+    void ArrowChanged(string from, int index, bool fired);
     void Notify(NoteKind kind, string title, string text);
     /// <summary>Replace {{key:Name}} placeholders. Throws InvalidOperationException if that is not possible.</summary>
     Task<string> ExpandKeysAsync(string text, CancellationToken ct);
@@ -27,6 +27,8 @@ internal sealed class AutomationOptions
 {
     /// <summary>Run only this cell and everything after it ("Run from here"). Null = run everything.</summary>
     public string? StartAt;
+    /// <summary>With StartAt: run only that one cell, no arrow is followed ("Run this cell").</summary>
+    public bool Single;
     public int MaxParallel = 4;
 }
 
@@ -72,8 +74,9 @@ internal sealed class AutomationRunner
     {
         public readonly Node From, To;
         public readonly AutoArrow Arrow;
+        public readonly int Index;
         public EdgeState State = EdgeState.Unknown;
-        public Edge(Node from, Node to, AutoArrow a) { From = from; To = to; Arrow = a; }
+        public Edge(Node from, Node to, AutoArrow a, int index) { From = from; To = to; Arrow = a; Index = index; }
     }
 
     private sealed record Snap(int Exit, string Output, int? Status);
@@ -88,6 +91,17 @@ internal sealed class AutomationRunner
     }
 
     private IAutomationHost _host = null!;
+    private bool _single;
+    private readonly object _cellGate = new();
+    private readonly Dictionary<string, CancellationTokenSource> _cellCts = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Stops one running cell (its process is killed). The rest of the run goes on; arrows from that cell do not fire.</summary>
+    public void CancelCell(string id)
+    {
+        CancellationTokenSource? c;
+        lock (_cellGate) _cellCts.TryGetValue(id, out c);
+        try { c?.Cancel(); } catch (ObjectDisposedException) { /* it just finished */ }
+    }
 
     private void Log(string msg) => _host.Log($"[{DateTime.Now:HH:mm:ss}] {msg}");
 
@@ -95,15 +109,17 @@ internal sealed class AutomationRunner
     {
         _host = host;
         options ??= new AutomationOptions();
+        _single = options.Single && !string.IsNullOrWhiteSpace(options.StartAt);
         var result = new AutomationResult();
 
         var nodes = new List<Node>();
         var byId = new Dictionary<string, Node>(StringComparer.OrdinalIgnoreCase);
         foreach (var c in file.Cells) { var n = new Node(c); nodes.Add(n); byId[c.Id] = n; }
         foreach (var n in nodes)
-            foreach (var a in n.Cell.Out)
+            for (var i = 0; i < n.Cell.Out.Count; i++)
             {
-                var e = new Edge(n, byId[a.To], a);
+                var a = n.Cell.Out[i];
+                var e = new Edge(n, byId[a.To], a, i);
                 n.Out.Add(e);
                 e.To.In.Add(e);
             }
@@ -121,6 +137,7 @@ internal sealed class AutomationRunner
             {
                 var n = stack.Pop();
                 if (!reach.Add(n)) continue;
+                if (_single) continue;             // "Run this cell": nothing after it takes part
                 foreach (var e in n.Out) stack.Push(e.To);
             }
             foreach (var n in nodes)
@@ -151,7 +168,17 @@ internal sealed class AutomationRunner
                 var snapshot = Snapshot(nodes);
                 var env = BuildEnv(next, snapshot);
                 var node = next;
-                running.Add((Task.Run(() => RunCellAsync(node, snapshot, env, ct)), node));
+                var cellCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                lock (_cellGate) _cellCts[node.Cell.Id] = cellCts;
+                running.Add((Task.Run(async () =>
+                {
+                    try { return await RunCellAsync(node, snapshot, env, cellCts.Token); }
+                    finally
+                    {
+                        lock (_cellGate) _cellCts.Remove(node.Cell.Id);
+                        cellCts.Dispose();
+                    }
+                }), node));
             }
 
             if (running.Count == 0) break;
@@ -172,7 +199,7 @@ internal sealed class AutomationRunner
                 if (n.State == CellState.Skipped) Log($"SKIP   {n.Cell.Id}");
             }
 
-        result.Cancelled = ct.IsCancellationRequested;
+        result.Cancelled = ct.IsCancellationRequested || nodes.Any(x => x.State == CellState.Cancelled);
         foreach (var n in nodes)
         {
             result.States[n.Cell.Id] = n.State;
@@ -237,7 +264,7 @@ internal sealed class AutomationRunner
                     foreach (var e in n.Out)
                     {
                         e.State = EdgeState.Dead;
-                        _host.ArrowChanged(n.Cell.Id, e.To.Cell.Id, false);
+                        _host.ArrowChanged(n.Cell.Id, e.Index, false);
                     }
                     _host.CellChanged(n.Cell.Id, CellState.Skipped, null);
                     Log($"SKIP   {n.Cell.Id}  (no arrow into it fired)");
@@ -256,7 +283,7 @@ internal sealed class AutomationRunner
         if (o.Cancelled)
         {
             n.State = CellState.Cancelled;
-            foreach (var e in n.Out) { e.State = EdgeState.Dead; _host.ArrowChanged(n.Cell.Id, e.To.Cell.Id, false); }
+            foreach (var e in n.Out) { e.State = EdgeState.Dead; _host.ArrowChanged(n.Cell.Id, e.Index, false); }
             _host.CellChanged(n.Cell.Id, CellState.Cancelled, null);
             Log($"CANCEL {n.Cell.Id}");
             return;
@@ -271,8 +298,8 @@ internal sealed class AutomationRunner
             var e = n.Out[i];
             var fire = i < o.Fire.Length && o.Fire[i];
             e.State = fire ? EdgeState.Fired : EdgeState.Dead;
-            _host.ArrowChanged(n.Cell.Id, e.To.Cell.Id, fire);
-            Log($"  -> {e.To.Cell.Id}  [{e.Arrow.Label}]  {(fire ? "fired" : "not fired")}");
+            _host.ArrowChanged(n.Cell.Id, e.Index, fire);
+            if (!_single) Log($"  -> {e.To.Cell.Id}  [{e.Arrow.Label}]  {(fire ? "fired" : "not fired")}");
             if (fire && n.State == CellState.Failed) n.Handled = true;
         }
     }
@@ -354,8 +381,9 @@ internal sealed class AutomationRunner
             Log($"  error: {_host.Mask(ex.Message)}");
         }
 
-        // Decide the arrows (a "when" command may run here).
+        // Decide the arrows (a "when" command may run here). "Run this cell" follows no arrow.
         o.Fire = new bool[n.Out.Count];
+        if (_single) return o;
         for (var i = 0; i < n.Out.Count; i++)
         {
             var a = n.Out[i].Arrow;

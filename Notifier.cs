@@ -83,7 +83,7 @@ internal static class Notifier
 
     /// <summary>Adds a notification (any thread). Skipped when the person is looking at that very tool.</summary>
     public static void Post(NoteKind kind, string title, string subtitle, string tool,
-                            string? keyToken = null, string? toastTitle = null, string? toastText = null)
+                            string? keyToken = null, string? toastTitle = null, string? toastText = null, bool always = false)
     {
         var ui = _ui;
         if (ui == null) return;
@@ -91,7 +91,7 @@ internal static class Notifier
         ui.TryEnqueue(() =>
         {
             // a finished download / request is not announced while the person looks at that very tool; key warnings always are
-            if (keyToken == null && WindowActive && _currentTool() == tool)
+            if (keyToken == null && !always && WindowActive && _currentTool() == tool)
             {
                 Log($"{kind}: {title} | {subtitle} | skipped (already on that tool)");
                 return;

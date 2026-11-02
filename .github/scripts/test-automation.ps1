@@ -55,6 +55,19 @@ $tests = @(
     @{ File = '12-timeout.automation'; Mode = '--run'; Exit = 0
        Must = @('took longer than 2 s', 'timed-out-handled', 'RESULT OK')
        Not = @() },
+    # "Run this cell" runs one cell and follows no arrow
+    @{ File = '01-success-chain.automation'; Mode = '--run'; Exit = 0; Tag = 'only-a'; Extra = @('--only', 'a')
+       Must = @('DONE\s+a\s+exit 0', 'hello-from-a', 'RESULT OK')
+       Not = @('RUN\s+b\b', '->') },
+    # the editor writes files with AutomationWriter: writing and reading again must change nothing
+    @{ File = '01-success-chain.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
+    @{ File = '02-failure-handled.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
+    @{ File = '04-when-command.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
+    @{ File = '05-variables.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
+    @{ File = '07-http-failure.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
+    @{ File = '08-join.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
+    @{ File = '10-from-here.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
+    @{ File = '12-timeout.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
     # a valid file is accepted by --check
     @{ File = '01-success-chain.automation'; Mode = '--check'; Exit = 0; Tag = 'check'
        Must = @('VALID', '4 cells')
