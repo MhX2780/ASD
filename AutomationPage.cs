@@ -35,11 +35,14 @@ public sealed class AutomationPage : ToolPage
         "cell done:\n  title: Finish\n  notify: The website is up\n  level: success\n\n" +
         "cell alert:\n  title: Alert\n  note: Something went wrong\n  notify: The website did not answer (status {{check.status}})\n  level: error\n";
 
+    private enum Side { Right, Bottom, Left, Top }
+
     private sealed class CardView
     {
         public string Id = "";
         public Border Root = null!;
         public Button Handle = null!;
+        public Side HandleSide = Side.Right;
         public TextBlock Status = null!;
         public ProgressRing Ring = null!;
         public Button Run = null!, RunFrom = null!, Cancel = null!;
@@ -67,14 +70,18 @@ public sealed class AutomationPage : ToolPage
     private readonly InfoBar _info = new() { IsOpen = false, IsClosable = true };
     private readonly TextBox _log = new()
     {
-        IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.NoWrap, Height = 190,
+        IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.NoWrap, Height = 150,
         FontFamily = new FontFamily("Consolas"), FontSize = 12,
     };
     private readonly Border _logPanel = new() { Visibility = Visibility.Collapsed };
     private readonly StackPanel _empty;
 
-    private Button _btnNew = null!, _btnOpen = null!, _btnSave = null!, _btnSaveAs = null!, _btnUndo = null!, _btnAdd = null!,
-                   _btnStart = null!, _btnStop = null!, _btnConnect = null!, _btnSettings = null!, _btnText = null!, _btnLog = null!;
+    // toolbar: Save, Start and Add cell are split buttons (the click does the main thing, the arrow opens the rest), zoom is a drop-down
+    private Button _btnUndo = null!, _btnStop = null!, _btnLog = null!;
+    private SplitButton _btnSave = null!, _btnStart = null!, _btnAdd = null!;
+    private DropDownButton _btnZoom = null!;
+    private MenuFlyoutItem _btnNew = null!, _btnOpen = null!, _btnSaveAs = null!, _btnQuiet = null!, _btnConnect = null!, _btnSettings = null!,
+                           _btnText = null!, _btnZoomIn = null!, _btnZoomOut = null!, _btnRunCell = null!, _btnRunFrom = null!;
 
     private string? _selected;
     private DragInfo? _drag;
@@ -101,7 +108,9 @@ public sealed class AutomationPage : ToolPage
 
         BuildLayout();
 
-        AddAccelerator(Windows.System.VirtualKey.Enter, Windows.System.VirtualKeyModifiers.Menu, () => { if (_selected != null) _ = OpenInspectorAsync(_selected); });
+        AddAccelerator(Windows.System.VirtualKey.Enter, Windows.System.VirtualKeyModifiers.Menu, () => _ = StartAsync(null, false, showLog: false));
+        AddAccelerator(Windows.System.VirtualKey.F5, Windows.System.VirtualKeyModifiers.None, () => _ = StartAsync(null, false));
+        AddAccelerator(Windows.System.VirtualKey.F2, Windows.System.VirtualKeyModifiers.None, () => { if (_selected != null) _ = OpenInspectorAsync(_selected); });
         AddAccelerator(Windows.System.VirtualKey.Enter, Windows.System.VirtualKeyModifiers.Control, () => { if (_selected != null) _ = StartAsync(_selected, true); });
         AddAccelerator(Windows.System.VirtualKey.Enter, Windows.System.VirtualKeyModifiers.Shift, () => { if (_selected != null) _ = StartAsync(_selected, false); });
         AddAccelerator(Windows.System.VirtualKey.S, Windows.System.VirtualKeyModifiers.Control, () => _ = SaveAsync(false));
@@ -121,25 +130,38 @@ public sealed class AutomationPage : ToolPage
 
     private void BuildLayout()
     {
-        _btnNew = ActionBtn("", "New", () => _ = NewAsync());
-        _btnOpen = ActionBtn("", "Open", () => _ = OpenFileAsync());
-        _btnSave = ActionBtn("", "Save", () => _ = SaveAsync(false));
-        _btnSaveAs = ActionBtn("", "Save as", () => _ = SaveAsync(true));
+        _btnNew = Item("", "New", () => _ = NewAsync());
+        _btnOpen = Item("", "Open", () => _ = OpenFileAsync());
+        _btnSaveAs = Item("", "Save as", () => _ = SaveAsync(true));
+        _btnSave = Split("", "Save", () => _ = SaveAsync(false), false, "Save (Ctrl+S). The arrow: Save as, Open, New.", _btnSaveAs, new MenuFlyoutSeparator(), _btnOpen, _btnNew);
+
         _btnUndo = ActionBtn("", "Undo", () => AutomationSession.UndoLast());
-        _btnAdd = ActionBtn("", "Add cell", () => _ = AddCellAsync());
-        _btnSettings = ActionBtn("", "Cell settings", () => { if (_selected != null) _ = OpenInspectorAsync(_selected); });
-        _btnConnect = ActionBtn("", "Connect", () => _ = OpenConnectAsync(null));
-        ToolTipService.SetToolTip(_btnConnect, "Connect two cells with an arrow: pick the cells from a list");
-        _btnText = ActionBtn("", "Text", () => _ = OpenTextAsync());
-        _btnStart = ActionBtn("", "Start", () => _ = StartAsync(null, false), accent: true);
+
+        _btnQuiet = Item("", "Run quietly", () => _ = StartAsync(null, false, showLog: false), "Run everything without opening the log (Alt+Enter)");
+        _btnRunCell = Item("", "Run selected cell only", () => { if (_selected != null) _ = StartAsync(_selected, true); }, "Ctrl+Enter");
+        _btnRunFrom = Item("", "Run from selected cell", () => { if (_selected != null) _ = StartAsync(_selected, false); }, "Shift+Enter");
+        _btnStart = Split("", "Start", () => _ = StartAsync(null, false), true, "Run the whole automation and show the log (F5). The arrow: run quietly, run one cell.", _btnQuiet, new MenuFlyoutSeparator(), _btnRunCell, _btnRunFrom);
         _btnStop = ActionBtn("", "Stop", () => AutomationSession.Stop());
+
+        _btnConnect = Item("", "Connect cells", () => _ = OpenConnectAsync(null), "Pick the two cells from a list");
+        _btnSettings = Item("", "Cell settings", () => { if (_selected != null) _ = OpenInspectorAsync(_selected); }, "F2, or just click the card");
+        _btnText = Item("", "Edit text", () => _ = OpenTextAsync(), "Edit the .automation text directly");
+        _btnAdd = Split("", "Add cell", () => _ = AddCellAsync(), false, "Add a card. The arrow: connect cells, settings, edit text.", _btnConnect, _btnSettings, _btnText);
+
+        _btnZoomOut = Item("", "Zoom out", () => Zoom(1 / 1.25f));
+        _btnZoomIn = Item("", "Zoom in", () => Zoom(1.25f));
+        var zoomFit = Item("", "Fit everything", () => ZoomToFit());
+        var zoomReset = Item("", "100%", () => ResetZoom());
+        var zoomMenu = new MenuFlyout();
+        foreach (var z in new MenuFlyoutItemBase[] { _btnZoomIn, _btnZoomOut, zoomReset, zoomFit }) zoomMenu.Items.Add(z);
+        _btnZoom = new DropDownButton { Content = "100%", Flyout = zoomMenu };
+        AutomationProperties.SetName(_btnZoom, "Zoom");
+        ToolTipService.SetToolTip(_btnZoom, "Zoom. Ctrl + mouse wheel, or two fingers on the touchpad, also zoom.");
+
         _btnLog = ActionBtn("", "Log", () => ShowLog(_logPanel.Visibility != Visibility.Visible));
-        ToolTipService.SetToolTip(_btnSettings, "Settings of the selected cell (Alt+Enter)");
-        ToolTipService.SetToolTip(_btnStart, "Run the whole automation");
-        ToolTipService.SetToolTip(_btnText, "Edit the .automation text directly");
 
         var bar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
-        foreach (var b in new UIElement[] { _btnNew, _btnOpen, _btnSave, _btnSaveAs, _btnUndo, Separator(), _btnAdd, _btnConnect, _btnSettings, _btnText, Separator(), _btnStart, _btnStop, Separator(), _btnLog })
+        foreach (var b in new UIElement[] { _btnSave, _btnUndo, Separator(), _btnStart, _btnStop, Separator(), _btnAdd, Separator(), _btnZoom, Separator(), _btnLog })
             bar.Children.Add(b);
         var barScroll = new ScrollViewer
         {
@@ -164,7 +186,10 @@ public sealed class AutomationPage : ToolPage
         _scroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
         _scroll.HorizontalScrollMode = ScrollMode.Enabled;
         _scroll.VerticalScrollMode = ScrollMode.Enabled;
-        _scroll.ZoomMode = ZoomMode.Disabled;
+        _scroll.ZoomMode = ZoomMode.Enabled;          // Ctrl + mouse wheel and a two-finger pinch on a touchpad zoom natively
+        _scroll.MinZoomFactor = 0.3f;
+        _scroll.MaxZoomFactor = 2f;
+        _scroll.ViewChanged += (_, _) => UpdateZoomLabel();
         _scroll.IsTabStop = true;
         _scroll.Content = _canvas;
         _scroll.SizeChanged += (_, _) => UpdateCanvasSize();
@@ -178,6 +203,13 @@ public sealed class AutomationPage : ToolPage
         area.Children.Add(_scroll);
         _empty.VerticalAlignment = VerticalAlignment.Center;
         area.Children.Add(_empty);
+        _logPanel.VerticalAlignment = VerticalAlignment.Bottom;
+        _logPanel.Margin = new Thickness(10);
+        _logPanel.Padding = new Thickness(10);
+        _logPanel.CornerRadius = new CornerRadius(8);
+        _logPanel.BorderThickness = new Thickness(1);
+        _logPanel.BorderBrush = new SolidColorBrush(Colors.Gray) { Opacity = 0.5 };
+        area.Children.Add(_logPanel);
         var areaBox = new Border
         {
             CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1),
@@ -188,8 +220,9 @@ public sealed class AutomationPage : ToolPage
 
         var hint = new TextBlock
         {
-            Text = "Left mouse: move a card · drag the dot on its right edge onto another card to connect them · click an arrow's label to change it · " +
-                   "right mouse (or the empty canvas): move the view · Alt+Enter: cell settings · Ctrl+Enter: run this cell · Shift+Enter: run from this cell",
+            Text = "Click a card: its settings · drag a card to move it · click the dot on a card (or the Connect button) to pick the cell it points to, or drag the dot onto a card · " +
+                   "click an arrow's label to change it · right mouse or the empty canvas: move the view · Ctrl + wheel / pinch: zoom · " +
+                   "F5 Start (with log) · Alt+Enter run quietly · Ctrl+Enter run this cell · Shift+Enter run from this cell · F2 settings",
             Opacity = 0.6, FontSize = 12, TextWrapping = TextWrapping.Wrap,
         };
 
@@ -226,12 +259,10 @@ public sealed class AutomationPage : ToolPage
         Grid.SetRow(_info, 1);
         Grid.SetRow(areaBox, 2);
         Grid.SetRow(hint, 3);
-        Grid.SetRow(_logPanel, 4);
         root.Children.Add(header);
         root.Children.Add(_info);
         root.Children.Add(areaBox);
         root.Children.Add(hint);
-        root.Children.Add(_logPanel);
 
         Content = root;
     }
@@ -306,6 +337,7 @@ public sealed class AutomationPage : ToolPage
 
     private void ShowLog(bool show)
     {
+        _logPanel.Background = ActualTheme == ElementTheme.Dark ? Solid(ColorHelper.FromArgb(245, 32, 32, 32)) : Solid(ColorHelper.FromArgb(245, 249, 249, 249));
         _logPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         if (show) ScrollLogToEnd();
     }
@@ -400,9 +432,68 @@ public sealed class AutomationPage : ToolPage
             w = Math.Max(w, Canvas.GetLeft(v.Root) + CardW);
             h = Math.Max(h, Canvas.GetTop(v.Root) + CardH);
         }
-        _canvas.Width = Math.Max(w + 400, Math.Max(_scroll.ViewportWidth, 600));
-        _canvas.Height = Math.Max(h + 300, Math.Max(_scroll.ViewportHeight, 400));
+        var z = Math.Max(0.1, _scroll.ZoomFactor);
+        _canvas.Width = Math.Max(w + 400, Math.Max(_scroll.ViewportWidth / z, 600));
+        _canvas.Height = Math.Max(h + 300, Math.Max(_scroll.ViewportHeight / z, 400));
     }
+
+    private static MenuFlyoutItem Item(string glyph, string text, Action click, string? tip = null)
+    {
+        var item = new MenuFlyoutItem { Text = text, Icon = new FontIcon { Glyph = glyph } };
+        item.Click += (_, _) => click();
+        if (tip != null) ToolTipService.SetToolTip(item, tip);
+        return item;
+    }
+
+    private SplitButton Split(string glyph, string text, Action primary, bool accent, string tip, params MenuFlyoutItemBase[] items)
+    {
+        var button = new SplitButton
+        {
+            Content = new StackPanel
+            {
+                Orientation = Orientation.Horizontal, Spacing = 8,
+                Children = { new FontIcon { Glyph = glyph, FontSize = 14 }, new TextBlock { Text = text } },
+            },
+        };
+        if (accent && Application.Current.Resources.TryGetValue("AccentSplitButtonStyle", out var st) && st is Style style) button.Style = style;
+        var flyout = new MenuFlyout();
+        foreach (var i in items) flyout.Items.Add(i);
+        button.Flyout = flyout;
+        button.Click += (_, _) =>
+        {
+            try { primary(); }
+            catch (Exception ex) { Say(ex.Message, InfoBarSeverity.Error); }
+        };
+        AutomationProperties.SetName(button, text);
+        ToolTipService.SetToolTip(button, tip);
+        return button;
+    }
+
+    private void ZoomToFit()
+    {
+        if (_cards.Count == 0) { ResetZoom(); return; }
+        double w = 0, h = 0;
+        foreach (var v in _cards.Values)
+        {
+            w = Math.Max(w, Canvas.GetLeft(v.Root) + CardW);
+            h = Math.Max(h, Canvas.GetTop(v.Root) + CardH);
+        }
+        var z = (float)Math.Clamp(Math.Min(_scroll.ViewportWidth / (w + 40), _scroll.ViewportHeight / (h + 40)), _scroll.MinZoomFactor, 1.0);
+        _scroll.ChangeView(0, 0, z, true);
+    }
+
+    private void UpdateZoomLabel() => _btnZoom.Content = $"{(int)Math.Round(_scroll.ZoomFactor * 100)}%";
+
+    private void Zoom(float factor)
+    {
+        var z0 = _scroll.ZoomFactor;
+        var z = Math.Clamp(z0 * factor, _scroll.MinZoomFactor, _scroll.MaxZoomFactor);
+        var cx = (_scroll.HorizontalOffset + _scroll.ViewportWidth / 2) / z0;      // keep the middle of what you see in the middle
+        var cy = (_scroll.VerticalOffset + _scroll.ViewportHeight / 2) / z0;
+        _scroll.ChangeView(Math.Max(0, cx * z - _scroll.ViewportWidth / 2), Math.Max(0, cy * z - _scroll.ViewportHeight / 2), z, true);
+    }
+
+    private void ResetZoom() => _scroll.ChangeView(null, null, 1f, true);
 
     private static string StepSummary(AutoCell c) => c.Step switch
     {
@@ -513,8 +604,41 @@ public sealed class AutomationPage : ToolPage
     {
         Canvas.SetLeft(v.Root, x);
         Canvas.SetTop(v.Root, y);
-        Canvas.SetLeft(v.Handle, x + CardW - 7);
-        Canvas.SetTop(v.Handle, y + CardH / 2 - 7);
+        PlaceHandle(v);
+    }
+
+    private static Point AnchorOf(double x, double y, Side side, double off) => side switch
+    {
+        Side.Right => new Point(x + CardW, y + CardH / 2 + off),
+        Side.Left => new Point(x, y + CardH / 2 + off),
+        Side.Bottom => new Point(x + CardW / 2 + off, y + CardH),
+        _ => new Point(x + CardW / 2 + off, y),
+    };
+
+    private static (double X, double Y) NormalOf(Side side) => side switch
+    {
+        Side.Right => (1, 0),
+        Side.Left => (-1, 0),
+        Side.Bottom => (0, 1),
+        _ => (0, -1),
+    };
+
+    private static Side Opposite(Side side) => side switch { Side.Right => Side.Left, Side.Left => Side.Right, Side.Bottom => Side.Top, _ => Side.Bottom };
+
+    /// <summary>Which side of a card faces a point: right/left when the target is mostly beside it, bottom/top when it is mostly above or below.</summary>
+    private static Side SideToward(double fromX, double fromY, double toX, double toY)
+    {
+        var dx = toX - fromX;
+        var dy = toY - fromY;
+        if (Math.Abs(dx) / CardW >= Math.Abs(dy) / CardH) return dx >= 0 ? Side.Right : Side.Left;
+        return dy >= 0 ? Side.Bottom : Side.Top;
+    }
+
+    private static void PlaceHandle(CardView v)
+    {
+        var p = AnchorOf(Canvas.GetLeft(v.Root), Canvas.GetTop(v.Root), v.HandleSide, 0);
+        Canvas.SetLeft(v.Handle, p.X - 7);
+        Canvas.SetTop(v.Handle, p.Y - 7);
     }
 
     private void RefreshRun()
@@ -571,6 +695,7 @@ public sealed class AutomationPage : ToolPage
         var s = AutomationSession.Running;
         var ok = !AutomationSession.Invalid && AutomationSession.Doc.Cells.Count > 0;
         _btnStart.IsEnabled = !s && ok;
+        _btnQuiet.IsEnabled = !s && ok;
         _btnStop.IsEnabled = s;
         _btnUndo.IsEnabled = AutomationSession.CanUndo && !s;
         _btnNew.IsEnabled = !s;
@@ -581,6 +706,8 @@ public sealed class AutomationPage : ToolPage
         _btnText.IsEnabled = !s;
         _btnConnect.IsEnabled = !s && !AutomationSession.Invalid && AutomationSession.Doc.Cells.Count >= 2;
         _btnSettings.IsEnabled = _selected != null && !s;
+        _btnRunCell.IsEnabled = _selected != null && !s && ok;
+        _btnRunFrom.IsEnabled = _selected != null && !s && ok;
     }
 
     // ───────── arrows ─────────
@@ -602,6 +729,18 @@ public sealed class AutomationPage : ToolPage
         foreach (var el in _arrowElems) _canvas.Children.Remove(el);
         _arrowElems.Clear();
 
+        // the connecting dot sits on the side that faces the cell the first arrow points to (right when there is none)
+        foreach (var c in AutomationSession.Doc.Cells)
+        {
+            if (!_cards.TryGetValue(c.Id, out var hv)) continue;
+            var side = Side.Right;
+            var first = c.Out.FirstOrDefault();
+            if (first != null && _cards.TryGetValue(first.To, out var ft))
+                side = SideToward(Canvas.GetLeft(hv.Root) + CardW / 2, Canvas.GetTop(hv.Root) + CardH / 2, Canvas.GetLeft(ft.Root) + CardW / 2, Canvas.GetTop(ft.Root) + CardH / 2);
+            hv.HandleSide = side;
+            PlaceHandle(hv);
+        }
+
         foreach (var c in AutomationSession.Doc.Cells)
         {
             if (!_cards.TryGetValue(c.Id, out var from)) continue;
@@ -619,16 +758,21 @@ public sealed class AutomationPage : ToolPage
     {
         if (!_cards.TryGetValue(a.To, out var to)) return;
 
-        var x0 = Canvas.GetLeft(from.Root) + CardW;
-        var y0 = Canvas.GetTop(from.Root) + CardH / 2;
-        var x1 = Canvas.GetLeft(to.Root);
-        var y1 = Canvas.GetTop(to.Root) + CardH / 2;
+        // leave through the side that faces the target and enter through the opposite side: a cell below gets an arrow going down
+        var sx = Canvas.GetLeft(from.Root);
+        var sy = Canvas.GetTop(from.Root);
+        var tx = Canvas.GetLeft(to.Root);
+        var ty = Canvas.GetTop(to.Root);
+        var outSide = SideToward(sx + CardW / 2, sy + CardH / 2, tx + CardW / 2, ty + CardH / 2);
+        var inSide = Opposite(outSide);
         var off = (k - (n - 1) / 2.0) * 34;
-        var dx = Math.Max(60, Math.Abs(x1 - x0) / 2);
-        var p0 = new Point(x0, y0);
-        var p1 = new Point(x0 + dx, y0 + off);
-        var p2 = new Point(x1 - dx, y1 + off);
-        var p3 = new Point(x1, y1);
+        var p0 = AnchorOf(sx, sy, outSide, off);
+        var p3 = AnchorOf(tx, ty, inSide, off);
+        var reach = Math.Max(50, Math.Sqrt((p3.X - p0.X) * (p3.X - p0.X) + (p3.Y - p0.Y) * (p3.Y - p0.Y)) / 2.5);
+        var n0 = NormalOf(outSide);
+        var n1 = NormalOf(inSide);
+        var p1 = new Point(p0.X + n0.X * reach, p0.Y + n0.Y * reach);
+        var p2 = new Point(p3.X + n1.X * reach, p3.Y + n1.Y * reach);
 
         var color = ArrowColor(a);
         bool? fired = AutomationSession.Arrows.TryGetValue((c.Id.ToLowerInvariant(), index), out var f) ? f : null;
@@ -721,11 +865,12 @@ public sealed class AutomationPage : ToolPage
         var p = e.GetCurrentPoint(_canvas).Position;
         if (!_linkMoved && Math.Abs(p.X - _linkStart.X) < 4 && Math.Abs(p.Y - _linkStart.Y) < 4) return;
         _linkMoved = true;
-        var x0 = Canvas.GetLeft(v.Root) + CardW;
-        var y0 = Canvas.GetTop(v.Root) + CardH / 2;
-        var dx = Math.Max(40, Math.Abs(p.X - x0) / 2);
+        var x0 = Canvas.GetLeft(v.Handle) + 7;
+        var y0 = Canvas.GetTop(v.Handle) + 7;
+        var nrm = NormalOf(v.HandleSide);
+        var reach = Math.Max(40, Math.Sqrt((p.X - x0) * (p.X - x0) + (p.Y - y0) * (p.Y - y0)) / 2.5);
         var figure = new PathFigure { StartPoint = new Point(x0, y0), IsClosed = false, IsFilled = false };
-        figure.Segments.Add(new BezierSegment { Point1 = new Point(x0 + dx, y0), Point2 = new Point(p.X - dx, p.Y), Point3 = p });
+        figure.Segments.Add(new BezierSegment { Point1 = new Point(x0 + nrm.X * reach, y0 + nrm.Y * reach), Point2 = p, Point3 = p });
         var geometry = new PathGeometry();
         geometry.Figures.Add(figure);
         _linkPath.Data = geometry;
@@ -1470,7 +1615,7 @@ public sealed class AutomationPage : ToolPage
         catch (Exception ex) { Say(ex.Message, InfoBarSeverity.Error); }
     }
 
-    private async Task StartAsync(string? startAt, bool single)
+    private async Task StartAsync(string? startAt, bool single, bool showLog = true)
     {
         try
         {
@@ -1482,7 +1627,7 @@ public sealed class AutomationPage : ToolPage
             if (!AutomationSession.Trusted && !await ConfirmTrustAsync()) return;
 
             _log.Text = "";
-            ShowLog(true);
+            if (showLog) ShowLog(true);
             _info.IsOpen = false;
             AutomationSession.Start(startAt, single);
         }

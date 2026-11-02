@@ -941,6 +941,18 @@ try {
             Start-Sleep -Milliseconds 900
             return $true
         }
+        function Open-SplitMenu([string]$splitName, [string]$item) {   # click the little arrow of a SplitButton, then the menu entry
+            $b = Find-Element $splitName
+            if (-not $b) { Log "PROBLEM: the split button '$splitName' was not found"; return $false }
+            $x = [int]($b.Rect.X + $b.Rect.Width - 14); $y = [int]($b.Rect.Y + $b.Rect.Height / 2)
+            Move-Mouse $x $y
+            Start-Sleep -Milliseconds 170
+            Click-Here
+            Log "CLICK the arrow of '$splitName' at ($x,$y)"
+            Start-Sleep -Milliseconds 700
+            if (-not (Wait-AnyName @($item) 5)) { Log "PROBLEM: '$item' is not in the menu of '$splitName'"; Dump-Names "menu $splitName"; return $false }
+            return (Click-Named $item 700)
+        }
         function Wait-AutoNote([string]$text, [int]$timeoutSec) {
             $end = (Get-Date).AddSeconds($timeoutSec)
             while ((Get-Date) -lt $end) {
@@ -952,7 +964,7 @@ try {
 
         if (Open-Tool 'Automation' 'Add cell') {
             # an empty canvas: New (a draft from an earlier run is discarded)
-            if (Click-Named 'New' 700) { if (Find-Element 'Discard') { [void](Click-Named 'Discard' 700) } }
+            if (Open-SplitMenu 'Save' 'New') { if (Find-Element 'Discard') { [void](Click-Named 'Discard' 700) } }
             Save-Shot 'automation-empty'
 
             Add-AutoCell 'ping' 'Ping localhost' 'run' 'ping -n 5 127.0.0.1'
@@ -963,13 +975,13 @@ try {
             # arrows: the first one from a cell is green (success), the second red (failure)
             [void](Drag-Between 'Connect from ping' 'All good')
             if (Wait-AnyName @('Arrow success to ok') 5) { Log 'OK: a green success arrow ping -> ok was drawn' } else { Log 'PROBLEM: no success arrow after dragging ping -> ok'; Dump-Names 'after drag 1' }
-            # the second arrow with the Connect button: a list of the other cards, one click on the target
-            if (Click-Named 'Connect' 900) {
+            # the second arrow with the Connect cells menu entry: a list of the other cards, one click on the target
+            if (Open-SplitMenu 'Add cell' 'Connect cells') {
                 if (Wait-AnyName @('Connect to bad') 8) {
                     Save-Shot 'automation-connect-dialog'
                     [void](Click-Named 'Connect to bad' 900)
                 } else { Log 'PROBLEM: the Connect dialog did not list the other cards'; Dump-Names 'connect dialog' }
-            } else { Log 'PROBLEM: the Connect button was not found' }
+            } else { Log 'PROBLEM: the Connect cells menu entry was not found' }
             if (Wait-AnyName @('Arrow failure to bad') 5) { Log 'OK: a red failure arrow ping -> bad was drawn' } else { Log 'PROBLEM: no failure arrow after dragging ping -> bad'; Dump-Names 'after drag 2' }
             Save-Shot 'automation-arrows'
 
@@ -980,7 +992,7 @@ try {
             }
 
             # the text view shows what the canvas wrote
-            if (Click-Named 'Text' 900) {
+            if (Open-SplitMenu 'Add cell' 'Edit text') {
                 Start-Sleep -Milliseconds 800
                 Save-Shot 'automation-text'
                 Press-Keys '{ESC}' 500
