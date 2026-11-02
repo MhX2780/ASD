@@ -460,7 +460,7 @@ public sealed class AutomationPage : ToolPage
                 Children = { new FontIcon { Glyph = glyph, FontSize = 14 }, new TextBlock { Text = text } },
             },
         };
-        if (accent && Application.Current.Resources.TryGetValue("AccentSplitButtonStyle", out var st) && st is Style style) button.Style = style;
+        if (accent) MakeAccent(button);
         var flyout = new MenuFlyout();
         foreach (var i in items) flyout.Items.Add(i);
         button.Flyout = flyout;
@@ -472,6 +472,42 @@ public sealed class AutomationPage : ToolPage
         AutomationProperties.SetName(button, text);
         ToolTipService.SetToolTip(button, tip);
         return button;
+    }
+
+    /// <summary>The system's accent (primary) color for a split button: the ready-made style when this version has one, and the same colors set by hand either way.</summary>
+    private static void MakeAccent(SplitButton button)
+    {
+        var res = Application.Current.Resources;
+        if (res.TryGetValue("AccentSplitButtonStyle", out var st) && st is Style style) button.Style = style;
+
+        object? Res(string key) => res.TryGetValue(key, out var v) ? v : null;
+        var normal = Res("AccentFillColorDefaultBrush");
+        var hover = Res("AccentFillColorSecondaryBrush") ?? normal;
+        var pressed = Res("AccentFillColorTertiaryBrush") ?? normal;
+        var disabled = Res("AccentFillColorDisabledBrush") ?? normal;
+        var text = Res("TextOnAccentFillColorPrimaryBrush");
+        var textDisabled = Res("TextOnAccentFillColorDisabledBrush") ?? text;
+        var none = Res("ControlFillColorTransparentBrush");
+
+        void Set(string key, object? value) { if (value != null) button.Resources[key] = value; }
+        foreach (var part in new[] { "SplitButton", "SplitButtonPrimary", "SplitButtonSecondary" })
+        {
+            Set(part + "Background", normal);
+            Set(part + "BackgroundPointerOver", hover);
+            Set(part + "BackgroundPressed", pressed);
+            Set(part + "BackgroundDisabled", disabled);
+            Set(part + "Foreground", text);
+            Set(part + "ForegroundPointerOver", text);
+            Set(part + "ForegroundPressed", text);
+            Set(part + "ForegroundDisabled", textDisabled);
+            Set(part + "BorderBrush", normal);
+            Set(part + "BorderBrushPointerOver", hover);
+            Set(part + "BorderBrushPressed", pressed);
+            Set(part + "BorderBrushDisabled", disabled);
+        }
+        Set("SplitButtonDividerBrush", Res("TextOnAccentFillColorPrimaryBrush"));
+        if (normal is Brush nb) button.Background = nb;
+        if (text is Brush tb) button.Foreground = tb;
     }
 
     private void ZoomToFit()
@@ -816,6 +852,23 @@ public sealed class AutomationPage : ToolPage
 
     private readonly List<Rect> _badgeRects = new();
 
+    /// <summary>True when the curve runs through a card other than the two it connects.</summary>
+    private bool CrossesCard(Point p0, Point p1, Point p2, Point p3, string fromId, string toId)
+    {
+        foreach (var (id, v) in _cards)
+        {
+            if (id.Equals(fromId, StringComparison.OrdinalIgnoreCase) || id.Equals(toId, StringComparison.OrdinalIgnoreCase)) continue;
+            var x = Canvas.GetLeft(v.Root) - 10;
+            var y = Canvas.GetTop(v.Root) - 10;
+            for (var i = 1; i < 20; i++)
+            {
+                var q = BezierAt(p0, p1, p2, p3, i / 20.0);
+                if (q.X >= x && q.X <= x + CardW + 20 && q.Y >= y && q.Y <= y + CardH + 20) return true;
+            }
+        }
+        return false;
+    }
+
     private static Point BezierAt(Point p0, Point p1, Point p2, Point p3, double t)
     {
         var u = 1 - t;
@@ -847,6 +900,28 @@ public sealed class AutomationPage : ToolPage
         var n1 = NormalOf(inSide);
         var p1 = new Point(p0.X + n0.X * reach, p0.Y + n0.Y * reach);
         var p2 = new Point(p3.X + n1.X * reach, p3.Y + n1.Y * reach);
+
+        // a cell in the way (e.g. A -> C with B between them): bend the arrow around it instead of drawing it behind the card
+        if (CrossesCard(p0, p1, p2, p3, c.Id, a.To))
+        {
+            var dx = p3.X - p0.X;
+            var dy = p3.Y - p0.Y;
+            var dist = Math.Sqrt(dx * dx + dy * dy);
+            if (dist > 1)
+            {
+                var nx = -dy / dist;
+                var ny = dx / dist;
+                foreach (var bulge in new[] { 70.0, -70.0, 120.0, -120.0, 180.0, -180.0, 260.0, -260.0 })
+                {
+                    var b1 = new Point(p1.X + nx * bulge, p1.Y + ny * bulge);
+                    var b2 = new Point(p2.X + nx * bulge, p2.Y + ny * bulge);
+                    if (CrossesCard(p0, b1, b2, p3, c.Id, a.To)) continue;
+                    p1 = b1;
+                    p2 = b2;
+                    break;
+                }
+            }
+        }
 
         var color = ArrowColor(a);
         bool? fired = AutomationSession.Arrows.TryGetValue((c.Id.ToLowerInvariant(), index), out var f) ? f : null;

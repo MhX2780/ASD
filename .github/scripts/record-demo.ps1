@@ -115,6 +115,50 @@ function Enable-Toasts {
     Log 'Windows banners (ToastEnabled) set to 1'
 }
 
+# Only on the disposable runner: "Do not disturb" hides every banner (the notification still lands in the notification center).
+# There is no reliable registry switch for it on Windows 11 (it lives in an opaque CloudStore value), so this does what a person does:
+# opens Settings > System > Notifications and flips the "Do not disturb" switch with UI Automation, then closes Settings.
+function Disable-DoNotDisturb {
+    try {
+        Start-Process 'ms-settings:notifications'
+        $root = [System.Windows.Automation.AutomationElement]::RootElement
+        $win = $null
+        $end = (Get-Date).AddSeconds(20)
+        while ((Get-Date) -lt $end -and -not $win) {
+            Start-Sleep -Milliseconds 500
+            $win = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, 'Settings'))
+        }
+        if (-not $win) { Log 'Do not disturb: the Settings window did not open (cannot check it)'; return }
+        Start-Sleep -Seconds 2
+        $found = $false
+        $nameCond = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, 'Do not disturb')
+        foreach ($el in @($win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $nameCond))) {
+            try {
+                $tp = $el.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+                $found = $true
+                $state = $tp.Current.ToggleState
+                Log "Do not disturb switch: $state"
+                if ($state -eq [System.Windows.Automation.ToggleState]::On) {
+                    $tp.Toggle()
+                    Start-Sleep -Milliseconds 800
+                    Log "Do not disturb switch after turning it off: $($tp.Current.ToggleState)"
+                }
+                break
+            } catch { }      # the label's own text has no toggle pattern: skipped
+        }
+        if (-not $found) { Log 'Do not disturb: no switch with that name was found on the Notifications page'; Dump-Window $win }
+    } catch { Log "Do not disturb: error $($_.Exception.Message)" }
+    finally { try { Stop-Process -Name 'SystemSettings' -Force -ErrorAction SilentlyContinue } catch { } }
+}
+
+function Dump-Window($win) {
+    $names = @()
+    foreach ($el in $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) {
+        try { $c = $el.Current; if ($c.Name) { $names += ("{0} [{1}]" -f $c.Name.Substring(0, [Math]::Min(50, $c.Name.Length)), $c.ControlType.ProgrammaticName.Replace('ControlType.', '')) } } catch { }
+    }
+    ($names | Select-Object -Unique -First 40) | ForEach-Object { Log "    $_" }
+}
+
 # Opens Windows' own notification center (Win+N) and looks for $text in it. A notification that Windows received is listed
 # there even when its banner was not shown. Returns $true / $false.
 function Check-NotificationCenter([string]$text, [string]$shotName) {
@@ -241,7 +285,7 @@ function Wait-AnyName([string[]]$names, [int]$timeoutSec = 30) {
     $end = (Get-Date).AddSeconds($timeoutSec)
     while ((Get-Date) -lt $end) {
         foreach ($n in $names) { if (Find-Element $n) { return $n } }
-        Start-Sleep -Milliseconds 400
+        Start-Sleep -Milliseconds 250
     }
     return $null
 }
@@ -272,7 +316,8 @@ function Click-Named([string]$name, [int]$pauseMs = 1800, [int]$scrollTries = 0)
 # Picture of the whole screen, saved next to the log (the workflow uploads toast-*.png), so a Windows notification can be seen
 # even if the video is hard to read. Never fails the run.
 $script:shotNo = 0
-function Save-Shot([string]$what) {
+function Save-Shot([string]$what, [switch]$Always) {
+    if ($script:LiteShots -and -not $Always) { return }
     try {
         Add-Type -AssemblyName System.Drawing
         Add-Type -AssemblyName System.Windows.Forms
@@ -555,6 +600,7 @@ try {
         Set-SystemTheme $SystemTheme
         Enable-Animations
         Enable-Toasts
+        Disable-DoNotDisturb
         Log 'MODE: GitHub Actions (the runner is disposable: Windows theme and animations are set, ASD is started with --github-actions)'
     } else {
         Log 'MODE: local (safe). ASD gets its own empty data folder; your settings, your Keys Store and Windows are not touched.'
@@ -888,8 +934,10 @@ try {
 
     # AUTOMATION: build an automation by hand through the page (3 cells, 2 arrows dragged between them), press Start,
     # leave the window while it runs (the Notification cell must reach Windows), come back and check the results.
-    if ($Scenario -ne 'keys') {
+    if ($Scenario -in 'automation','all') {
     try {
+        $savedPause = $PauseScale; $PauseScale = [Math]::Min($PauseScale, 0.25)   # quicker clicks here: the page is the whole video
+        $script:LiteShots = $true                                                # and no stills in between (each one stalls the recording)
         Press-Keys '{ESC}' 400; Press-Keys '{ESC}' 400
         $autoNotes = Join-Path $settingsDir 'notifications.log'
         $autoDraft = Join-Path $settingsDir 'automation-draft.automation'
@@ -902,7 +950,7 @@ try {
         function Set-Box([string]$field, [string]$text) {      # click into the box, select what is there, type
             Fill-Field $field ''
             Press-Keys '^a' 120
-            Type-Text $text 10
+            Type-Text $text 3
         }
         function Choose-Item([string]$combo, [string]$item) {  # open a drop-down and pick an entry
             if (Click-Named $combo 500) {
@@ -924,6 +972,17 @@ try {
             if (-not (Click-Named 'Apply' 900)) { Log "PROBLEM: the Apply button was not found ($id)" }
             if (Wait-AnyName @($title) 8) { Log "OK: the card '$title' is on the canvas" } else { Log "PROBLEM: the card '$title' did not appear"; Dump-Names 'automation canvas' }
         }
+        function Move-MouseAbs([int]$x, [int]$y, [int]$steps = 20) {   # real mouse input (SetCursorPos alone sends no moves while a button is held)
+            $sw = [Native]::GetSystemMetrics(0); $sh = [Native]::GetSystemMetrics(1)
+            $p = New-Object Native+POINT
+            [void][Native]::GetCursorPos([ref]$p)
+            for ($i = 1; $i -le $steps; $i++) {
+                $t = $i / $steps; $t = $t * $t * (3 - 2 * $t)
+                $cx = [int]($p.X + ($x - $p.X) * $t); $cy = [int]($p.Y + ($y - $p.Y) * $t)
+                [Native]::mouse_event(0x8001, [uint32](($cx * 65535) / ($sw - 1)), [uint32](($cy * 65535) / ($sh - 1)), 0, [UIntPtr]::Zero)
+                Start-Sleep -Milliseconds 10
+            }
+        }
         function Drag-Between([string]$handleName, [string]$targetText) {   # drag the dot of one card onto another card
             $h = Find-Element $handleName
             $t = Find-Element $targetText
@@ -931,11 +990,12 @@ try {
             $hx = [int]($h.Rect.X + $h.Rect.Width / 2); $hy = [int]($h.Rect.Y + $h.Rect.Height / 2)
             $tx = [int]($t.Rect.X + $t.Rect.Width / 2); $ty = [int]($t.Rect.Y + $t.Rect.Height / 2)
             Move-Mouse $hx $hy 12
-            Start-Sleep -Milliseconds 250
+            Start-Sleep -Milliseconds 150
             [Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)      # left down on the dot
+            Start-Sleep -Milliseconds 120
+            Move-MouseAbs ($hx + 8) ($hy + 8) 4
+            Move-MouseAbs $tx $ty 30
             Start-Sleep -Milliseconds 200
-            Move-Mouse $tx $ty 30
-            Start-Sleep -Milliseconds 300
             Save-Shot "automation-dragging-$($targetText -replace '[^A-Za-z]', '')"
             [Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)      # left up on the other card
             Start-Sleep -Milliseconds 900
@@ -943,19 +1003,19 @@ try {
         }
         function Open-SplitMenu([string]$splitName, [string]$item, [string]$shortcut = '') {   # open the drop-down part of a SplitButton, then click the entry
             # UI Automation: SplitButton -> ExpandCollapse (never a pixel click: a click on the main part would run Save / Add cell)
-            $cond = [System.Windows.Automation.AndCondition]::new(
-                [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, $splitName),
-                [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::SplitButton))
+            $cond = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, $splitName)
             $opened = $false
             foreach ($w in (Get-AppWindows)) {
-                $el = $w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
-                if (-not $el) { continue }
-                try {
-                    $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
-                    $opened = $true
-                    Log "OPENED the menu of '$splitName' (UI Automation)"
-                } catch { Log "the menu of '$splitName' could not be expanded: $($_.Exception.Message)" }
-                break
+                foreach ($el in @($w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond))) {
+                    try {
+                        if ($el.Current.IsOffscreen) { continue }
+                        $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()   # the text inside the button has no such pattern -> skipped
+                        $opened = $true
+                        Log "OPENED the menu of '$splitName' (UI Automation)"
+                        break
+                    } catch { }
+                }
+                if ($opened) { break }
             }
             if ($opened -and (Wait-AnyName @($item) 5)) { Start-Sleep -Milliseconds 400; return (Click-Named $item 700) }
             Log "PROBLEM: '$item' is not in the menu of '$splitName'"
@@ -985,6 +1045,11 @@ try {
 
             # arrows: the first one from a cell is green (success), the second red (failure)
             [void](Drag-Between 'Connect from ping' 'All good')
+            if (-not (Wait-AnyName @('Arrow success to ok') 3)) {
+                Log 'PROBLEM: the drag did not create ping -> ok; using the Connect cells window for this arrow instead'
+                Dump-Names 'after drag 1'
+                if (Open-SplitMenu 'Add cell' 'Connect cells' '^l') { if (Wait-AnyName @('Connect to ok') 8) { [void](Click-Named 'Connect to ok' 700) } }
+            }
             if (Wait-AnyName @('Arrow success to ok') 5) { Log 'OK: a green success arrow ping -> ok was drawn' } else { Log 'PROBLEM: no success arrow after dragging ping -> ok'; Dump-Names 'after drag 1' }
             # the second arrow with the Connect cells menu entry: a list of the other cards, one click on the target
             if (Open-SplitMenu 'Add cell' 'Connect cells' '^l') {
@@ -1021,11 +1086,11 @@ try {
                 $away = Go-Away
                 if (Wait-AutoNote 'All good' 40) { Log 'OK: the Notification cell posted its notification' } else { Log 'PROBLEM: no notification from the Notification cell after 40 s' }
                 Start-Sleep -Milliseconds 1500
-                Save-Shot 'automation-toast'
+                Save-Shot 'automation-toast' -Always
                 Come-Back $away
                 if (Wait-AnyName @('Finished OK') 30) { Log 'OK: the automation finished' } else { Log 'PROBLEM: the automation did not report "Finished OK"'; Dump-Names 'automation run' }
                 if (Find-Element 'skipped') { Log 'OK: the failure branch (Ping failed) was skipped' } else { Log 'PROBLEM: no card shows "skipped"' }
-                Save-Shot 'automation-run'
+                Save-Shot 'automation-run' -Always
             } else { Log 'PROBLEM: the Start button of Automation was not found' }
             if (Test-Path $autoRunLog) {
                 Get-Content $autoRunLog | ForEach-Object { Log "automation.log: $_" }
@@ -1036,7 +1101,33 @@ try {
                 if (Wait-AnyName @('The cell finished OK') 15) { Log 'OK: Run this cell only worked' } else { Log 'PROBLEM: Run this cell only did not finish'; Dump-Names 'single cell' }
                 Save-Shot 'automation-single'
             } else { Log 'PROBLEM: the Run cell bad button was not found' }
+
+            # the arrow's own text and color: click the label of the red arrow
+            if (Click-Named 'Arrow failure to bad' 500) {
+                if (Wait-AnyName @('Arrow text') 6) {
+                    Set-Box 'Arrow text' 'Retry path'
+                    [void](Click-Named 'Color purple' 500)
+                    Save-Shot 'automation-arrow-editor' -Always
+                    [void](Click-Named 'Apply' 700)
+                    if (Wait-AnyName @('Arrow Retry path to bad') 6) { Log 'OK: the arrow shows its own text' } else { Log 'PROBLEM: the arrow did not get its own text'; Dump-Names 'arrow editor' }
+                } else { Log 'PROBLEM: the arrow window did not open'; Dump-Names 'arrow click' }
+            } else { Log 'PROBLEM: the red arrow label was not found' }
+
+            # zoom out, fit everything, back to 100 %
+            if (Open-SplitMenu 'Zoom' 'Zoom out' '') { Start-Sleep -Milliseconds 500 }
+            if (Open-SplitMenu 'Zoom' 'Fit everything' '') { Start-Sleep -Milliseconds 500 }
+            [void](Open-SplitMenu 'Zoom' '100%' '')
+
+            # Alt+Enter: run without opening the log; automation.log must be newer afterwards
+            $before = if (Test-Path $autoRunLog) { (Get-Item $autoRunLog).LastWriteTimeUtc } else { [datetime]::MinValue }
+            Press-Keys '%{ENTER}' 300
+            $end = (Get-Date).AddSeconds(30); $newer = $false
+            while ((Get-Date) -lt $end -and -not $newer) { Start-Sleep -Milliseconds 400; if ((Test-Path $autoRunLog) -and (Get-Item $autoRunLog).LastWriteTimeUtc -gt $before) { $newer = $true } }
+            if ($newer) { Log 'OK: Alt+Enter ran the automation (automation.log is newer)' } else { Log 'PROBLEM: Alt+Enter did not run the automation' }
+            Start-Sleep -Milliseconds 1200
+            Save-Shot 'automation-final' -Always
         }
+        $PauseScale = $savedPause; $script:LiteShots = $false
     } catch { Log "ERROR in the Automation scene: $($_.Exception.Message)" }
     }   # end of the Automation scene
 
