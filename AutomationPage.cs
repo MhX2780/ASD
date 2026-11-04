@@ -76,6 +76,14 @@ public sealed class AutomationPage : ToolPage
     private readonly Border _logPanel = new() { Visibility = Visibility.Collapsed };
     private readonly StackPanel _empty;
 
+    // the minimap in the corner of the board, and the "breathing" border of a running cell
+    private readonly Canvas _miniCanvas = new() { Width = 188, Height = 120 };
+    private readonly Border _mini = new() { Visibility = Visibility.Collapsed };
+    private double _miniScale = 1;
+    private bool _miniDrag;
+    private readonly DispatcherTimer _pulse = new() { Interval = TimeSpan.FromMilliseconds(650) };
+    private bool _pulseLow;
+
     // toolbar: Save, Start and Add cell are split buttons (the click does the main thing, the arrow opens the rest), zoom is a drop-down
     private Button _btnUndo = null!, _btnStop = null!, _btnLog = null!;
     private SplitButton _btnSave = null!, _btnStart = null!, _btnAdd = null!;
@@ -120,8 +128,9 @@ public sealed class AutomationPage : ToolPage
         AddAccelerator(Windows.System.VirtualKey.L, Windows.System.VirtualKeyModifiers.Control, () => _ = OpenConnectAsync(null));
         AddAccelerator(Windows.System.VirtualKey.E, Windows.System.VirtualKeyModifiers.Control, () => _ = OpenTextAsync());
 
+        _pulse.Tick += (_, _) => Pulse();
         Loaded += (_, _) => Hook();
-        Unloaded += (_, _) => Unhook();
+        Unloaded += (_, _) => { Unhook(); _pulse.Stop(); };
     }
 
     private void AddAccelerator(Windows.System.VirtualKey key, Windows.System.VirtualKeyModifiers mods, Action action)
@@ -194,7 +203,7 @@ public sealed class AutomationPage : ToolPage
         _scroll.ZoomMode = ZoomMode.Enabled;          // Ctrl + mouse wheel and a two-finger pinch on a touchpad zoom natively
         _scroll.MinZoomFactor = 0.3f;
         _scroll.MaxZoomFactor = 2f;
-        _scroll.ViewChanged += (_, _) => UpdateZoomLabel();
+        _scroll.ViewChanged += (_, _) => { UpdateZoomLabel(); RefreshMiniMap(); };
         _scroll.IsTabStop = true;
         _scroll.Content = _canvas;
         _scroll.SizeChanged += (_, _) => UpdateCanvasSize();
@@ -215,6 +224,8 @@ public sealed class AutomationPage : ToolPage
         _logPanel.BorderThickness = new Thickness(1);
         _logPanel.BorderBrush = new SolidColorBrush(Colors.Gray) { Opacity = 0.5 };
         area.Children.Add(_logPanel);
+        BuildMiniMap();
+        area.Children.Add(_mini);
         var areaBox = new Border
         {
             CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1),
@@ -440,6 +451,103 @@ public sealed class AutomationPage : ToolPage
         var z = Math.Max(0.1, _scroll.ZoomFactor);
         _canvas.Width = Math.Max(w + 400, Math.Max(_scroll.ViewportWidth / z, 600));
         _canvas.Height = Math.Max(h + 300, Math.Max(_scroll.ViewportHeight / z, 400));
+        RefreshMiniMap();
+    }
+
+    // ───────── minimap ─────────
+
+    private void BuildMiniMap()
+    {
+        _mini.HorizontalAlignment = HorizontalAlignment.Right;
+        _mini.VerticalAlignment = VerticalAlignment.Top;
+        _mini.Margin = new Thickness(0, 10, 18, 0);
+        _mini.Padding = new Thickness(4);
+        _mini.CornerRadius = new CornerRadius(8);
+        _mini.BorderThickness = new Thickness(1);
+        _mini.BorderBrush = new SolidColorBrush(Colors.Gray) { Opacity = 0.5 };
+        _mini.Background = new SolidColorBrush(Colors.Gray) { Opacity = 0.18 };
+        _mini.Child = _miniCanvas;
+        _miniCanvas.Background = new SolidColorBrush(Colors.Transparent);     // so the canvas gets the pointer
+        ToolTipService.SetToolTip(_mini, "Map of the board: click or drag to move the view");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(_mini, "Board map");
+        _miniCanvas.PointerPressed += (_, e) => { _miniDrag = true; _miniCanvas.CapturePointer(e.Pointer); MiniGo(e); };
+        _miniCanvas.PointerMoved += (_, e) => { if (_miniDrag) MiniGo(e); };
+        _miniCanvas.PointerReleased += (_, e) => { _miniDrag = false; _miniCanvas.ReleasePointerCapture(e.Pointer); };
+        _miniCanvas.PointerCaptureLost += (_, _) => _miniDrag = false;
+    }
+
+    /// <summary>Puts the middle of the view where the pointer is on the map.</summary>
+    private void MiniGo(Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        var p = e.GetCurrentPoint(_miniCanvas).Position;
+        var z = Math.Max(0.1, _scroll.ZoomFactor);
+        var x = p.X / _miniScale * z - _scroll.ViewportWidth / 2;
+        var y = p.Y / _miniScale * z - _scroll.ViewportHeight / 2;
+        _scroll.ChangeView(Math.Max(0, x), Math.Max(0, y), null, true);
+    }
+
+    private void RefreshMiniMap()
+    {
+        if (_cards.Count == 0) { _mini.Visibility = Visibility.Collapsed; return; }
+        double w = 0, h = 0;
+        foreach (var v in _cards.Values)
+        {
+            w = Math.Max(w, Canvas.GetLeft(v.Root) + CardW);
+            h = Math.Max(h, Canvas.GetTop(v.Root) + CardH);
+        }
+        w += 40; h += 40;
+        var z = Math.Max(0.1, _scroll.ZoomFactor);
+        var viewW = _scroll.ViewportWidth / z;
+        var viewH = _scroll.ViewportHeight / z;
+
+        // only worth showing when the board is bigger than what you see
+        var needed = w > viewW * 1.05 || h > viewH * 1.05;
+        _mini.Visibility = needed ? Visibility.Visible : Visibility.Collapsed;
+        if (!needed) return;
+
+        w = Math.Max(w, viewW); h = Math.Max(h, viewH);
+        _miniScale = Math.Min(_miniCanvas.Width / w, _miniCanvas.Height / h);
+        _miniCanvas.Children.Clear();
+        foreach (var c in AutomationSession.Doc.Cells)
+        {
+            if (!_cards.TryGetValue(c.Id, out var v)) continue;
+            AutomationSession.States.TryGetValue(c.Id, out var st);
+            var color = st switch
+            {
+                CellState.Running => Blue, CellState.Succeeded => Green, CellState.Failed => Red,
+                CellState.Cancelled => Orange, CellState.Skipped => Grey, _ => ColorHelper.FromArgb(255, 138, 138, 138),
+            };
+            _miniCanvas.Children.Add(new Border
+            {
+                Width = Math.Max(3, CardW * _miniScale), Height = Math.Max(3, CardH * _miniScale), CornerRadius = new CornerRadius(2),
+                Background = Solid(color), Margin = new Thickness(Canvas.GetLeft(v.Root) * _miniScale, Canvas.GetTop(v.Root) * _miniScale, 0, 0),
+            });
+        }
+        var vx = _scroll.HorizontalOffset / z * _miniScale;
+        var vy = _scroll.VerticalOffset / z * _miniScale;
+        _miniCanvas.Children.Add(new Border
+        {
+            Width = Math.Max(6, Math.Min(viewW * _miniScale, _miniCanvas.Width - vx)), Height = Math.Max(6, Math.Min(viewH * _miniScale, _miniCanvas.Height - vy)),
+            BorderThickness = new Thickness(1.5), BorderBrush = Solid(ColorHelper.FromArgb(255, 96, 165, 250)),
+            Background = Solid(ColorHelper.FromArgb(255, 96, 165, 250), 0.12), CornerRadius = new CornerRadius(2),
+            Margin = new Thickness(vx, vy, 0, 0),
+        });
+    }
+
+    // ───────── a running cell "breathes" ─────────
+
+    private void Pulse()
+    {
+        var any = false;
+        _pulseLow = !_pulseLow;
+        foreach (var c in AutomationSession.Doc.Cells)
+        {
+            AutomationSession.States.TryGetValue(c.Id, out var st);
+            if (st != CellState.Running || !_cards.TryGetValue(c.Id, out var v)) continue;
+            any = true;
+            if (v.Root.BorderBrush is SolidColorBrush b) b.Opacity = _pulseLow ? 0.35 : 1.0;
+        }
+        if (!any) { _pulse.Stop(); _pulseLow = false; }
     }
 
     private static MenuFlyoutItem Item(string glyph, string text, Action click, string? tip = null)
@@ -542,6 +650,8 @@ public sealed class AutomationPage : ToolPage
         StepKind.Http => c.HttpMethod + " " + Flat(c.HttpUrl),
         StepKind.Notify => "notify: " + Flat(c.Command),
         StepKind.Wait => $"wait {c.WaitSeconds:0.##} s",
+        StepKind.Status => "status: result of the cell before",
+        StepKind.Upload => "upload " + Flat(System.IO.Path.GetFileName(c.UploadFile.Replace('/', '\\'))) + " → " + Flat(c.UploadTo),
         _ => "(no step: passes through)",
     };
 
@@ -690,6 +800,7 @@ public sealed class AutomationPage : ToolPage
         DrawArrows();
         RefreshToolbar();
         RefreshFileLabel();
+        RefreshMiniMap();
     }
 
     private void ApplyState(CardView v, AutoCell c)
@@ -712,7 +823,8 @@ public sealed class AutomationPage : ToolPage
             default: color = selected ? ColorHelper.FromArgb(255, 96, 165, 250) : ColorHelper.FromArgb(160, 138, 138, 138); break;
         }
         v.Root.BorderBrush = Solid(color);
-        v.Root.BorderThickness = new Thickness(selected ? 3 : 2);
+        v.Root.BorderThickness = new Thickness(selected || st == CellState.Running ? 3 : 2);
+        if (st == CellState.Running && !_pulse.IsEnabled) _pulse.Start();
         v.Root.Opacity = opacity;
         v.Status.Text = status;
         v.Ring.IsActive = st == CellState.Running;
@@ -775,6 +887,7 @@ public sealed class AutomationPage : ToolPage
     private static string BadgeText(AutoArrow a)
     {
         if (!string.IsNullOrWhiteSpace(a.Name)) return Short(a.Name, 30);
+        if (a.Otherwise) return "otherwise";
         var extra = a.When != null || a.ExitCode != null || a.Contains != null;
         var parts = new List<string>();
         if (a.Kind != ArrowKind.Always || !extra) parts.Add(a.Kind switch { ArrowKind.Success => "success", ArrowKind.Failure => "failure", _ => "always" });
@@ -1069,7 +1182,7 @@ public sealed class AutomationPage : ToolPage
         return null;
     }
 
-    private void ConnectCells(string from, string to, ArrowKind? forced = null, bool custom = false)
+    private void ConnectCells(string from, string to, ArrowKind? forced = null, bool custom = false, bool otherwise = false)
     {
         var chosen = ArrowKind.Success;
         var ok = AutomationSession.TryEdit(f =>
@@ -1079,14 +1192,14 @@ public sealed class AutomationPage : ToolPage
             chosen = forced ?? (!c.Out.Any(a => a.Kind == ArrowKind.Success) ? ArrowKind.Success
                    : !c.Out.Any(a => a.Kind == ArrowKind.Failure) ? ArrowKind.Failure
                    : ArrowKind.Always);
-            if (!custom && c.Out.Any(a => a.Kind == chosen && a.IsPlain && a.To.Equals(target.Id, StringComparison.OrdinalIgnoreCase)))
+            if (!custom && c.Out.Any(a => a.Kind == chosen && a.Otherwise == otherwise && a.IsPlain && a.To.Equals(target.Id, StringComparison.OrdinalIgnoreCase)))
                 throw new InvalidOperationException("That arrow already exists.");
-            c.Out.Add(new AutoArrow { Kind = chosen, To = target.Id });
+            c.Out.Add(new AutoArrow { Kind = chosen, Otherwise = otherwise, To = target.Id });
         }, out var error);
 
         if (ok)
         {
-            var word = chosen switch { ArrowKind.Success => "success (green)", ArrowKind.Failure => "failure (red)", _ => "always (grey)" };
+            var word = otherwise ? "otherwise (the else branch)" : chosen switch { ArrowKind.Success => "success (green)", ArrowKind.Failure => "failure (red)", _ => "always (grey)" };
             Say($"Arrow added: {word}. Click its label to change when it fires.", InfoBarSeverity.Informational);
             if (custom)
             {
@@ -1240,7 +1353,8 @@ public sealed class AutomationPage : ToolPage
             Kind.Items.Add("On success (exit 0)");
             Kind.Items.Add("On failure (exit not 0)");
             Kind.Items.Add("Always");
-            Kind.SelectedIndex = a == null ? 0 : a.Kind switch { ArrowKind.Success => 0, ArrowKind.Failure => 1, _ => 2 };
+            Kind.Items.Add("Otherwise (none of the other arrows of this cell fired)");
+            Kind.SelectedIndex = a == null ? 0 : a.Otherwise ? 3 : a.Kind switch { ArrowKind.Success => 0, ArrowKind.Failure => 1, _ => 2 };
             foreach (var t in targets) Target.Items.Add(t);
             if (a != null && Target.Items.Contains(a.To)) Target.SelectedItem = a.To;
             else if (Target.Items.Count > 0) Target.SelectedIndex = 0;
@@ -1323,9 +1437,12 @@ public sealed class AutomationPage : ToolPage
             }
             var contains = Contains.Text.Replace("\r", " ").Replace("\n", " ").Trim();
             var name = Name.Text.Replace("\r", " ").Replace("\n", " ").Trim();
+            var otherwise = Kind.SelectedIndex == 3;
+            if (otherwise) { when = ""; code = null; contains = ""; }       // "otherwise" has no conditions of its own
             return new AutoArrow
             {
                 Kind = Kind.SelectedIndex switch { 0 => ArrowKind.Success, 1 => ArrowKind.Failure, _ => ArrowKind.Always },
+                Otherwise = otherwise,
                 When = when.Length > 0 ? when : null,
                 ExitCode = code,
                 Contains = contains.Length > 0 ? contains : null,
@@ -1366,7 +1483,7 @@ public sealed class AutomationPage : ToolPage
         foreach (var c in doc.Cells) cbFrom.Items.Add(CellLabel(c));
         cbFrom.SelectedIndex = start;
         var cbKind = new ComboBox { Header = "Arrow type", HorizontalAlignment = HorizontalAlignment.Stretch };
-        foreach (var k in new[] { "Automatic (green first, then red, then grey)", "On success (green)", "On failure (red)", "Always (grey)", "Custom… (your own condition, color and name)" }) cbKind.Items.Add(k);
+        foreach (var k in new[] { "Automatic (green first, then red, then grey)", "On success (green)", "On failure (red)", "Always (grey)", "Custom… (your own condition, color and name)", "Otherwise (the else branch)" }) cbKind.Items.Add(k);
         cbKind.SelectedIndex = 0;
 
         var list = new StackPanel { Spacing = 6 };
@@ -1418,8 +1535,8 @@ public sealed class AutomationPage : ToolPage
         await ShowAsync(dlg);
 
         if (target == null) return;
-        ArrowKind? kind = cbKind.SelectedIndex switch { 1 => ArrowKind.Success, 2 => ArrowKind.Failure, 3 or 4 => ArrowKind.Always, _ => null };
-        ConnectCells(doc.Cells[Math.Max(0, cbFrom.SelectedIndex)].Id, target, kind, custom: cbKind.SelectedIndex == 4);
+        ArrowKind? kind = cbKind.SelectedIndex switch { 1 => ArrowKind.Success, 2 => ArrowKind.Failure, 3 or 4 or 5 => ArrowKind.Always, _ => null };
+        ConnectCells(doc.Cells[Math.Max(0, cbFrom.SelectedIndex)].Id, target, kind, custom: cbKind.SelectedIndex == 4, otherwise: cbKind.SelectedIndex == 5);
     }
 
     private async Task OpenInspectorAsync(string id)
@@ -1435,8 +1552,8 @@ public sealed class AutomationPage : ToolPage
         var tbNote = Field("Mini title (small text under the title)", cell.Note, mono: false);
 
         var cbStep = new ComboBox { Header = "What this cell does", HorizontalAlignment = HorizontalAlignment.Stretch };
-        foreach (var s in new[] { "Nothing (only passes through, e.g. a Finish marker)", "Run a command", "HTTP request", "Notification", "Wait" }) cbStep.Items.Add(s);
-        cbStep.SelectedIndex = cell.Step switch { StepKind.Run => 1, StepKind.Http => 2, StepKind.Notify => 3, StepKind.Wait => 4, _ => 0 };
+        foreach (var s in new[] { "Nothing (only passes through, e.g. a Finish marker)", "Run a command", "HTTP request", "Notification", "Wait", "Status (takes the result of the cell before it; its arrows decide by that)", "Upload a file (Dropbox or HTTP)" }) cbStep.Items.Add(s);
+        cbStep.SelectedIndex = cell.Step switch { StepKind.Run => 1, StepKind.Http => 2, StepKind.Notify => 3, StepKind.Wait => 4, StepKind.Status => 5, StepKind.Upload => 6, _ => 0 };
 
         // run
         var tbCmd = Field("Command (runs with cmd.exe, under your Windows account)", cell.Step == StepKind.Run ? cell.Command : "", multi: true, height: 70);
@@ -1472,6 +1589,44 @@ public sealed class AutomationPage : ToolPage
         var nbWait = Number("Seconds to wait", cell.WaitSeconds, 86400);
         var pWait = new StackPanel { Children = { nbWait } };
 
+        // status
+        var pStatus = new StackPanel
+        {
+            Spacing = 6,
+            Children =
+            {
+                Note("A status cell does nothing itself: it takes the exit code, the output and the status of the cell that sent it here. " +
+                     "Give it several arrows and each fires by that result, for example  exit 0 → B,  exit 1 → C,  otherwise → D. " +
+                     "The arrow that points at it should be \"Always\" if it must also receive a failure."),
+            },
+        };
+
+        // upload
+        var upKind = (cell.UploadTo.Length > 0 ? cell.UploadTo.Split(' ', 2)[0] : "dropbox").ToLowerInvariant();
+        var upRest = cell.UploadTo.Contains(' ') ? cell.UploadTo[(cell.UploadTo.IndexOf(' ') + 1)..].Trim() : "";
+        var tbUpFile = Field("File to upload (full path; {{id.output}} of an earlier cell can be the path)", cell.UploadFile, mono: true);
+        var btnUpBrowse = new Button { Content = "Browse…" };
+        btnUpBrowse.Click += async (_, _) =>
+        {
+            var path = await FilePick.AnyAsync();
+            if (path != null) tbUpFile.Text = path;
+        };
+        var cbUpTo = new ComboBox { Header = "Send it to", HorizontalAlignment = HorizontalAlignment.Stretch };
+        foreach (var t in new[] { "Dropbox", "HTTP POST (multipart form, field \"file\")", "HTTP PUT (the file is the body)" }) cbUpTo.Items.Add(t);
+        cbUpTo.SelectedIndex = upKind switch { "post" => 1, "put" => 2, _ => 0 };
+        var tbUpPath = Field("Dropbox path (a folder ending with /, or the full file path) or the URL", upRest, mono: true);
+        var tbUpHeaders = Field("Headers for HTTP (one per line: Name: value)", string.Join("\r\n", cell.Headers.Select(h => h.Key + ": " + h.Value)), multi: true, height: 70);
+        var pUpload = new StackPanel
+        {
+            Spacing = 6,
+            Children =
+            {
+                tbUpFile, btnUpBrowse, cbUpTo, tbUpPath, KeyRefs.InsertButton(() => tbUpPath), tbUpHeaders, KeyRefs.InsertButton(() => tbUpHeaders),
+                Note("Success = the file was sent (exit 0). The result is {{id.status}} (the HTTP status) and {{id.output}} (the answer, or the Dropbox share link). " +
+                     "Dropbox needs a one-time sign-in: open the Upload page and use its Dropbox menu."),
+            },
+        };
+
         var nbTimeout = Number("Time limit in seconds (0 = default)", cell.TimeoutSeconds, 86400);
         var cbJoin = new ComboBox { Header = "When several arrows point at this cell", HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var j in new[] { "Wait for all of them; run if at least one fired", "Wait for all of them; run only if every one fired", "Run as soon as the first one fires" }) cbJoin.Items.Add(j);
@@ -1484,7 +1639,9 @@ public sealed class AutomationPage : ToolPage
             pHttp.Visibility = i == 2 ? Visibility.Visible : Visibility.Collapsed;
             pNotify.Visibility = i == 3 ? Visibility.Visible : Visibility.Collapsed;
             pWait.Visibility = i == 4 ? Visibility.Visible : Visibility.Collapsed;
-            nbTimeout.Visibility = i is 1 or 2 ? Visibility.Visible : Visibility.Collapsed;
+            pStatus.Visibility = i == 5 ? Visibility.Visible : Visibility.Collapsed;
+            pUpload.Visibility = i == 6 ? Visibility.Visible : Visibility.Collapsed;
+            nbTimeout.Visibility = i is 1 or 2 or 6 ? Visibility.Visible : Visibility.Collapsed;
         }
         cbStep.SelectionChanged += (_, _) => SyncPanels();
         SyncPanels();
@@ -1518,7 +1675,7 @@ public sealed class AutomationPage : ToolPage
             Spacing = 10, MinWidth = 600,
             Children =
             {
-                tbId, tbTitle, tbNote, cbStep, pRun, pHttp, pNotify, pWait, nbTimeout, cbJoin,
+                tbId, tbTitle, tbNote, cbStep, pRun, pHttp, pNotify, pWait, pStatus, pUpload, nbTimeout, cbJoin,
                 new TextBlock { Text = "Arrows out of this cell", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 6, 0, 0) },
                 Note("Green = on success · red = on failure · grey = always. Your own conditions (all of them must be true): an exit code, a text in the output, a command that exits 0 (orange). Give the arrow your own text and color if you like."),
                 rowsPanel, addArrow, error,
@@ -1551,7 +1708,7 @@ public sealed class AutomationPage : ToolPage
                 c.Title = tbTitle.Text.Trim();
                 c.Note = tbNote.Text.Trim();
 
-                c.Command = ""; c.HttpUrl = ""; c.Body = ""; c.Headers.Clear(); c.WaitSeconds = 0; c.Level = "info"; c.HttpMethod = "GET";
+                c.Command = ""; c.HttpUrl = ""; c.Body = ""; c.Headers.Clear(); c.WaitSeconds = 0; c.Level = "info"; c.HttpMethod = "GET"; c.UploadFile = ""; c.UploadTo = "";
                 switch (cbStep.SelectedIndex)
                 {
                     case 1:
@@ -1581,11 +1738,31 @@ public sealed class AutomationPage : ToolPage
                         c.Step = StepKind.Wait;
                         c.WaitSeconds = Num(nbWait);
                         break;
+                    case 5:
+                        c.Step = StepKind.Status;
+                        break;
+                    case 6:
+                    {
+                        c.Step = StepKind.Upload;
+                        c.UploadFile = tbUpFile.Text.Trim();
+                        if (c.UploadFile.Length == 0) throw new InvalidOperationException("Choose the file to upload.");
+                        var where = tbUpPath.Text.Trim();
+                        if (where.Length == 0) throw new InvalidOperationException("Write the Dropbox path or the URL.");
+                        c.UploadTo = (cbUpTo.SelectedIndex switch { 1 => "post ", 2 => "put ", _ => "dropbox " }) + where;
+                        if (cbUpTo.SelectedIndex != 0)
+                            foreach (var line in tbUpHeaders.Text.Replace("\r", "\n").Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                            {
+                                var i = line.IndexOf(':');
+                                if (i <= 0) throw new InvalidOperationException($"The header \"{line}\" must look like  Name: value");
+                                c.Headers.Add(new KeyValuePair<string, string>(line[..i].Trim(), line[(i + 1)..].Trim()));
+                            }
+                        break;
+                    }
                     default:
                         c.Step = StepKind.None;
                         break;
                 }
-                c.TimeoutSeconds = cbStep.SelectedIndex is 1 or 2 ? (int)Math.Round(Num(nbTimeout)) : 0;
+                c.TimeoutSeconds = cbStep.SelectedIndex is 1 or 2 or 6 ? (int)Math.Round(Num(nbTimeout)) : 0;
                 c.Join = cbJoin.SelectedIndex switch { 1 => JoinMode.All, 2 => JoinMode.First, _ => JoinMode.Settle };
                 c.Out.Clear();
                 c.Out.AddRange(arrows);

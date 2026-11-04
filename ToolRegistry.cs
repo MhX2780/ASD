@@ -12,7 +12,8 @@ public sealed record ToolInfo(
 
 public static class ToolRegistry
 {
-    public static readonly IReadOnlyList<ToolInfo> All = new List<ToolInfo>
+    /// <summary>Tools that are part of ASD.</summary>
+    private static readonly List<ToolInfo> Base = new List<ToolInfo>
     {
         // ── Home (own navigation item) ──
         new("home", "Home", "Favorites and quick access", "\uE80F", "main",
@@ -29,6 +30,10 @@ public static class ToolRegistry
         // ── Automation (own navigation item, not in the Toolbox) ──
         new("automation", "Automation", "Cards joined by arrows (on success, on failure, when ...) that run commands, web requests and notifications", "\uE768", "main",
             "automation automate workflow flow cells cards arrows notebook script run task pipeline schedule on success failure when", () => new AutomationPage()),
+
+        // ── Upload File (own navigation item, not in the Toolbox) ──
+        new("upload", "Upload File", "Send a file to Dropbox or to any web address (POST or PUT), with a progress bar", "\uE898", "main",
+            "upload file send dropbox cloud storage post put multipart share link transfer", () => new UploadPage()),
 
         // ── Toolbox: every tool ──
         new("ico", "Image → ICO", "PNG, JPG, SVG … to a multi-size icon.ico", "\uE91B", "more",
@@ -78,10 +83,37 @@ public static class ToolRegistry
         new("settings", "Settings", "Theme and preferences", "\uE713", "system", "settings theme clipboard", () => new SettingsPage()),
     };
 
+    private static readonly List<ToolInfo> Extra = new();
+
+    /// <summary>Every tool: ASD's own and the ones added by installed extensions.</summary>
+    public static IReadOnlyList<ToolInfo> All => Extra.Count == 0 ? Base : Base.Concat(Extra).ToList();
+
+    /// <summary>Only the tools that extensions added.</summary>
+    public static IReadOnlyList<ToolInfo> ExtensionTools => Extra;
+
+    public static void AddExtension(ToolInfo tool)
+    {
+        if (Base.Any(t => t.Tag == tool.Tag) || Extra.Any(t => t.Tag == tool.Tag)) return;
+        Extra.Add(tool);
+    }
+
     public static ToolInfo? Find(string tag) => All.FirstOrDefault(t => t.Tag == tag);
 
     public static HashSet<string> Favorites()
         => SettingsStore.Get("Favorites", "").Split(',', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
+
+    /// <summary>The tools opened most recently (newest first), for Home.</summary>
+    public static List<ToolInfo> Recent(int max)
+        => SettingsStore.Get("Recent", "").Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(Find).Where(t => t != null && t.Group != "system" && t.Tag != "home").Select(t => t!).Take(max).ToList();
+
+    public static void NoteUsed(string tag)
+    {
+        if (tag is "home" or "more" or "settings") return;
+        var list = SettingsStore.Get("Recent", "").Split(',', StringSplitOptions.RemoveEmptyEntries).Where(t => t != tag).ToList();
+        list.Insert(0, tag);
+        SettingsStore.Set("Recent", string.Join(",", list.Take(8)));
+    }
 
     public static void ToggleFavorite(string tag)
     {

@@ -1,0 +1,12 @@
+automation: upload errors
+cell a:
+  upload: C:\x.txt
+cell b:
+  upload: C:\x.txt
+  to: ftp ftp://x
+cell c:
+  upload: C:\x.txt
+  to: post example.com
+cell d:
+  to: dropbox /x
+  run: echo d

@@ -63,6 +63,7 @@ internal sealed class AutomationRunner
         public int Exit;
         public string Output = "";
         public int? Status;
+        public int Seq;                 // the order cells finished in (a status cell reads the one that finished last)
         public bool Forced;
         public bool Handled;
         public readonly List<Edge> In = new();
@@ -274,8 +275,11 @@ internal sealed class AutomationRunner
         } while (changed);
     }
 
+    private int _seq;
+
     private void Apply(Node n, Outcome o)
     {
+        n.Seq = ++_seq;
         n.Exit = o.Exit;
         n.Output = o.Output;
         n.Status = o.Status;
@@ -363,6 +367,19 @@ internal sealed class AutomationRunner
                     o.Output = text;
                     break;
                 }
+                case StepKind.Status:
+                {
+                    // takes over the result of the cell that sent it here, so its own arrows can decide by that result
+                    var from = n.In.Where(e => e.State == EdgeState.Fired).OrderByDescending(e => e.From.Seq).Select(e => e.From).FirstOrDefault()
+                               ?? n.In.OrderByDescending(e => e.From.Seq).Select(e => e.From).FirstOrDefault();
+                    if (from == null) { Log("  status: nothing points here, so the result is exit 0"); break; }
+                    o.Exit = from.Exit; o.Output = from.Output; o.Status = from.Status;
+                    Log($"  status: {from.Cell.Id} ended with exit {from.Exit}{(from.Status != null ? $", status {from.Status}" : "")}");
+                    break;
+                }
+                case StepKind.Upload:
+                    await RunUploadAsync(c, snap, o, ct);
+                    break;
                 case StepKind.Wait:
                     Log($"  waiting {c.WaitSeconds:0.##} s");
                     await Task.Delay(TimeSpan.FromSeconds(c.WaitSeconds), ct);
@@ -384,9 +401,11 @@ internal sealed class AutomationRunner
         // Decide the arrows (a "when" command may run here). "Run this cell" follows no arrow.
         o.Fire = new bool[n.Out.Count];
         if (_single) return o;
+        var anyFired = false;
         for (var i = 0; i < n.Out.Count; i++)
         {
             var a = n.Out[i].Arrow;
+            if (a.Otherwise) continue;                      // decided below, when the others are known
             var match = a.Kind switch { ArrowKind.Always => true, ArrowKind.Success => o.Exit == 0, _ => o.Exit != 0 };
             if (match && a.ExitCode != null) match = o.Exit == a.ExitCode.Value;
             if (match && a.Contains != null) match = (o.Output ?? "").Contains(a.Contains, StringComparison.OrdinalIgnoreCase);
@@ -397,7 +416,10 @@ internal sealed class AutomationRunner
                 catch (Exception ex) { match = false; Log($"  when: error: {_host.Mask(ex.Message)}"); }
             }
             o.Fire[i] = match;
+            anyFired |= match;
         }
+        for (var i = 0; i < n.Out.Count; i++)
+            if (n.Out[i].Arrow.Otherwise) o.Fire[i] = !anyFired;
         return o;
     }
 
@@ -481,6 +503,36 @@ internal sealed class AutomationRunner
             o.Output = "timed out";
             Log("  error: the request timed out");
         }
+    }
+
+    private async Task RunUploadAsync(AutoCell c, Dictionary<string, Snap> snap, Outcome o, CancellationToken ct)
+    {
+        var file = (await ExpandAsync(c.UploadFile, snap, allowOutput: true, ct)).Trim();
+        var to = await ExpandAsync(c.UploadTo, snap, allowOutput: true, ct);
+        var target = UploadEngine.ParseTarget(to, out var where);
+        if (target == null)
+        {
+            o.Exit = 1; o.Output = "unknown upload target";
+            Log($"  error: \"{_host.Mask(to)}\" is not dropbox / post / put");
+            return;
+        }
+
+        var opt = new UploadOptions { Target = target.Value, FilePath = file, Where = where, TimeoutSeconds = c.TimeoutSeconds, ShareLink = true };
+        foreach (var h in c.Headers) opt.Headers.Add((h.Key, await ExpandAsync(h.Value, snap, allowOutput: true, ct)));
+
+        string? appKey = null, refresh = null;
+        if (target == UploadTarget.Dropbox)
+        {
+            appKey = DropboxStore.AppKey;
+            refresh = await _host.ExpandKeysAsync("{{key:" + DropboxStore.RefName + "}}", ct);
+        }
+
+        Log($"  upload {_host.Mask(file)}  ->  {target.Value.ToString().ToLowerInvariant()} {_host.Mask(where)}");
+        var r = await UploadEngine.RunAsync(opt, appKey, refresh, null, ct);
+        o.Exit = r.Ok ? 0 : 1;
+        o.Output = Cap(r.Output, MaxStoredOutput);
+        o.Status = r.Status > 0 ? r.Status : null;
+        Log($"  upload: {_host.Mask(r.Message)}");
     }
 
     private async Task<(int Exit, string Output)> RunProcessAsync(string command, Dictionary<string, string> env, int timeoutSeconds, CancellationToken ct)

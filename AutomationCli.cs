@@ -80,8 +80,8 @@ internal static class AutomationCli
             sb.Append(c.Id).Append('|').Append(c.Title).Append('|').Append(c.Note).Append('|').Append(c.X).Append(',').Append(c.Y)
               .Append('|').Append(c.Step).Append('|').Append(c.Command).Append('|').Append(c.HttpMethod).Append('|').Append(c.HttpUrl)
               .Append('|').Append(c.Body).Append('|').Append(string.Join(";", c.Headers.Select(h => h.Key + "=" + h.Value)))
-              .Append('|').Append(c.WaitSeconds).Append('|').Append(c.Level).Append('|').Append(c.TimeoutSeconds).Append('|').Append(c.Join).Append('\n');
-            foreach (var a in c.Out) sb.Append("   ").Append(a.Kind).Append('|').Append(a.When).Append('|').Append(a.ExitCode).Append('|').Append(a.Contains).Append('|').Append(AutoArrow.NormalizeColor(a.Color)).Append('|').Append(a.Name).Append("->").Append(a.To).Append('\n');
+              .Append('|').Append(c.WaitSeconds).Append('|').Append(c.Level).Append('|').Append(c.TimeoutSeconds).Append('|').Append(c.Join).Append('|').Append(c.UploadFile).Append('|').Append(c.UploadTo).Append('\n');
+            foreach (var a in c.Out) sb.Append("   ").Append(a.Kind).Append(a.Otherwise ? "|otherwise" : "").Append('|').Append(a.When).Append('|').Append(a.ExitCode).Append('|').Append(a.Contains).Append('|').Append(AutoArrow.NormalizeColor(a.Color)).Append('|').Append(a.Name).Append("->").Append(a.To).Append('\n');
         }
         return sb.ToString();
     }

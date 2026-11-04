@@ -62,6 +62,20 @@ $tests = @(
     @{ File = '14-arrow-errors.automation'; Mode = '--check'; Exit = 2
        Must = @('line 4: "notacolor" is not a color', 'line 5: "exit" needs a number', 'line 6: unknown arrow option "size"', 'line 7: "contains" needs a text', 'INVALID')
        Not = @() },
+    # a status cell takes the result of the cell before it; "otherwise" is the else branch
+    @{ File = '15-status-cell.automation'; Mode = '--run'; Exit = 0
+       Must = @('status: a ended with exit 3', 'FAIL\s+check\s+exit 3', 'ran-three', 'SKIP\s+zero', 'SKIP\s+other', 'RESULT OK')
+       Not = @('RUN\s+zero', 'RUN\s+other', 'SHOULD-NOT-RUN') },
+    @{ File = '16-otherwise.automation'; Mode = '--run'; Exit = 0
+       Must = @('ran-rest', 'SKIP\s+one', 'SKIP\s+two', 'RESULT OK')
+       Not = @('RUN\s+one', 'RUN\s+two', 'SHOULD-NOT-RUN') },
+    # upload cells: wrong settings are found when the file is read; a missing file is an ordinary failure that an arrow can handle
+    @{ File = '17-upload-errors.automation'; Mode = '--check'; Exit = 2
+       Must = @('has no "to:"', 'must be\s+dropbox', 'the post URL must start with', 'INVALID')
+       Not = @() },
+    @{ File = '18-upload-missing-file.automation'; Mode = '--run'; Exit = 0
+       Must = @('The file does not exist', 'upload-failed-handled', 'RESULT OK')
+       Not = @() },
     # "Run this cell" runs one cell and follows no arrow
     @{ File = '01-success-chain.automation'; Mode = '--run'; Exit = 0; Tag = 'only-a'; Extra = @('--only', 'a')
        Must = @('DONE\s+a\s+exit 0', 'hello-from-a', 'RESULT OK')
@@ -75,6 +89,9 @@ $tests = @(
     @{ File = '08-join.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
     @{ File = '10-from-here.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
     @{ File = '13-custom-arrows.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
+    @{ File = '15-status-cell.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
+    @{ File = '16-otherwise.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
+    @{ File = '18-upload-missing-file.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
     @{ File = '12-timeout.automation'; Mode = '--roundtrip'; Exit = 0; Tag = 'roundtrip'; Must = @('ROUNDTRIP OK'); Not = @() },
     # a valid file is accepted by --check
     @{ File = '01-success-chain.automation'; Mode = '--check'; Exit = 0; Tag = 'check'

@@ -40,6 +40,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- the contract between ASD and its extensions (a separate DLL, because an extension is compiled against it) -->
+    <Compile Remove="ASD.Extensibility\**" />
+    <EmbeddedResource Remove="ASD.Extensibility\**" />
+    <None Remove="ASD.Extensibility\**" />
+    <ProjectReference Include="ASD.Extensibility\ASD.Extensibility.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260508005" />
     <PackageReference Include="Microsoft.Win32.SystemEvents" Version="8.0.0" />
   </ItemGroup>

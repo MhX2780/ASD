@@ -1,0 +1,7 @@
+automation: upload of a missing file
+cell a:
+  upload: C:\this\does\not\exist.bin
+  to: post https://127.0.0.1:9/upload
+  failure -> handled
+cell handled:
+  run: echo upload-failed-handled

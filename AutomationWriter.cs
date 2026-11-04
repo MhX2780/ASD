@@ -46,6 +46,13 @@ internal static class AutomationWriter
                     if (c.Level != "info") Line("level", c.Level);
                     break;
                 case StepKind.Wait: Line("wait", c.WaitSeconds.ToString("0.##", CultureInfo.InvariantCulture)); break;
+                case StepKind.Status: Line("status", "incoming"); break;
+                case StepKind.Upload:
+                    Line("upload", One(c.UploadFile));
+                    Line("to", One(c.UploadTo));
+                    foreach (var h in c.Headers)
+                        if (One(h.Key).Length > 0) Line("header", One(h.Key) + ": " + One(h.Value));
+                    break;
             }
 
             if (c.TimeoutSeconds > 0) Line("timeout", c.TimeoutSeconds.ToString(CultureInfo.InvariantCulture));
@@ -54,8 +61,9 @@ internal static class AutomationWriter
             foreach (var a in c.Out)
             {
                 var parts = new List<string>();
+                if (a.Otherwise) parts.Add("otherwise");
                 var extra = a.When != null || a.ExitCode != null || a.Contains != null;
-                if (a.Kind != ArrowKind.Always || !extra) parts.Add(a.Kind switch { ArrowKind.Success => "success", ArrowKind.Failure => "failure", _ => "always" });
+                if (!a.Otherwise && (a.Kind != ArrowKind.Always || !extra)) parts.Add(a.Kind switch { ArrowKind.Success => "success", ArrowKind.Failure => "failure", _ => "always" });
                 if (a.ExitCode != null) parts.Add("exit " + a.ExitCode.Value.ToString(CultureInfo.InvariantCulture));
                 if (One(a.Contains).Length > 0) parts.Add("contains " + Safe(a.Contains));
                 if (a.When != null) parts.Add("when " + One(a.When));

@@ -105,10 +105,12 @@ public sealed partial class MainWindow : Window
     {
         RootNav.IsPaneOpen = false;
         UpdateCaptionColors();
+        AddExtensionNavItems();
         OpenTool("home");
         CursorHelper.ApplyHandCursorToNavItems(RootNav);
         _splash = PlaySplashAsync();
         _ = CheckForUpdateOnStartupAsync();
+        _ = RefreshExtensionsBadgeAsync();
         Notifier.Init(DispatcherQueue, tag => OpenTool(tag), BringToFront, () => _current?.Tag);
         KeyWatch.Check();                                              // keys that are about to expire (or have)
         var keyTimer = new DispatcherTimer { Interval = TimeSpan.FromHours(4) };
@@ -122,6 +124,7 @@ public sealed partial class MainWindow : Window
         if (tag == "search") { FocusSearch(); return; }
         if (tag == "bell") { _ = ShowNotificationsAsync(); return; }   // a dialog, not a page
         if (tag == "updates") { UpdateWindow.ShowWindow(); return; }   // opens its own window, no page
+        if (tag == "extensions") { ExtensionsWindow.ShowWindow(); return; }   // opens its own window, no page
         OpenTool(tag);
     }
 
@@ -145,6 +148,7 @@ public sealed partial class MainWindow : Window
         var page = tool.Create();
         var previous = _current;   // used to tell "opening a tool" from "going back"
         _current = tool;
+        ToolRegistry.NoteUsed(tool.Tag);
         ContentHost.Content = page;
         (page as ToolPage)?.Activate(parameter);
         AppTitleBar.IsBackButtonVisible = _history.Count > 0;
@@ -408,6 +412,36 @@ public sealed partial class MainWindow : Window
     /// button and show a dialog (Update now / Update later). Silent when offline.
     /// Builds without an update.txt (run from Visual Studio) are never prompted.
     /// </summary>
+    /// <summary>Extensions placed in the navigation bar get their own item (just before the Toolbox).</summary>
+    private void AddExtensionNavItems()
+    {
+        try
+        {
+            var toolbox = RootNav.MenuItems.OfType<NavigationViewItem>().FirstOrDefault(i => i.Tag as string == "more");
+            var at = toolbox != null ? RootNav.MenuItems.IndexOf(toolbox) : RootNav.MenuItems.Count;
+            foreach (var t in ToolRegistry.ExtensionTools.Where(t => t.Group == "main"))
+            {
+                var item = new NavigationViewItem { Content = t.Title, Tag = t.Tag, Icon = new FontIcon { Glyph = t.Glyph, FontSize = 16 } };
+                ToolTipService.SetToolTip(item, t.Description);
+                RootNav.MenuItems.Insert(at++, item);
+            }
+        }
+        catch { /* an extension must never stop ASD from opening */ }
+    }
+
+    /// <summary>The number on the Extensions item: new extensions plus updates (reads only the small list).</summary>
+    internal async Task RefreshExtensionsBadgeAsync(bool force = false)
+    {
+        try
+        {
+            if (AppPaths.GithubActions) return;
+            var n = await ExtensionStore.QuickCountAsync(force, CancellationToken.None);
+            ExtensionsBadge.Value = n;
+            ExtensionsBadge.Visibility = n > 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        catch { /* the badge is only a hint */ }
+    }
+
     private async Task CheckForUpdateOnStartupAsync()
     {
         try

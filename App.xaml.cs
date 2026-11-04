@@ -32,6 +32,8 @@ public partial class App : Application
             return;
         }
 
+        ExtensionLoader.LoadAll();      // installed extensions add their pages before the window is built
+
         var window = new MainWindow();
         MainWindow = window;
         window.Activate();

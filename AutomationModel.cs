@@ -21,6 +21,7 @@ namespace ASD;
 //      exit 2 -> retry                  fires only when the exit code is exactly 2
 //      failure contains timeout -> slow fires only when the cell's output contains "timeout" (any letter case)
 //      always exit 3 contains busy when ping -n 1 x -> t     conditions can be combined: all of them must be true
+//      otherwise -> d                   fires only when none of the cell's other arrows fired (the "else" branch)
 //      success -> next | color #8B5CF6 | name Deploy     after the target: your own arrow color and your own text on the arrow
 //
 //    cell alert:
@@ -28,12 +29,14 @@ namespace ASD;
 //      level: error
 //
 //  One step per cell:  run: <command>  |  http: [METHOD] <url>  |  notify: <text>  |  wait: <seconds>
+//                      |  status: incoming        (takes the result of the cell before it; its arrows decide by that result)
+//                      |  upload: <file>  +  to: dropbox /Folder/  |  post <url>  |  put <url>
 //  A cell with no step only passes through (use it as a note or a "Finish" marker).
 //  A cell with no arrows is where its branch ends.
 // ─────────────────────────────────────────────────────────────────────────────
 
 internal enum ArrowKind { Success, Failure, Always }
-internal enum StepKind { None, Run, Http, Notify, Wait }
+internal enum StepKind { None, Run, Http, Notify, Wait, Status, Upload }
 
 /// <summary>What a cell waits for when several arrows point at it.</summary>
 internal enum JoinMode
@@ -59,17 +62,20 @@ internal sealed class AutoArrow
     public string? Color;
     /// <summary>Optional: your own text on the arrow instead of "success" / "failure" / ...</summary>
     public string? Name;
+    /// <summary>The "else" arrow: fires only when none of the other arrows of the same cell fired.</summary>
+    public bool Otherwise;
     public string To = "";
     public int Line;
 
     /// <summary>True for a plain green / red / grey arrow: no extra condition, no own color, no own name.</summary>
-    public bool IsPlain => When == null && ExitCode == null && Contains == null && Color == null && Name == null;
+    public bool IsPlain => !Otherwise && When == null && ExitCode == null && Contains == null && Color == null && Name == null;
 
     /// <summary>The arrow's condition in the language's own words (what comes before "-&gt;").</summary>
     public string Label
     {
         get
         {
+            if (Otherwise) return "otherwise";
             var parts = new List<string>();
             var hasExtra = When != null || ExitCode != null || Contains != null;
             if (Kind != ArrowKind.Always || !hasExtra) parts.Add(Kind switch { ArrowKind.Success => "success", ArrowKind.Failure => "failure", _ => "always" });
@@ -126,6 +132,8 @@ internal sealed class AutoCell
     public string Level = "info";              // notify: success | error | warning | info
     public int TimeoutSeconds;                 // 0 = default for the step
     public JoinMode Join = JoinMode.Settle;
+    public string UploadFile = "";             // upload: the file to send
+    public string UploadTo = "";               // upload: "dropbox /Folder/" | "post <url>" | "put <url>"
     public readonly List<AutoArrow> Out = new();
     public int Line;
 
@@ -241,7 +249,7 @@ internal static class AutomationParser
     {
         if (!t.Contains("->", StringComparison.Ordinal)) return false;
         var first = FirstWord(t).ToLowerInvariant();
-        return first is "success" or "failure" or "always" or "when" or "exit" or "contains";
+        return first is "success" or "failure" or "always" or "when" or "exit" or "contains" or "otherwise";
     }
 
     private static void ParseArrow(AutoFile f, AutoCell cell, string t, int ln)
@@ -283,8 +291,10 @@ internal static class AutomationParser
         var first = FirstWord(head);
         var rest = head;
         var kind = ArrowKind.Always;
+        var otherwise = false;
         switch (first.ToLowerInvariant())
         {
+            case "otherwise": otherwise = true; rest = head[first.Length..].Trim(); break;
             case "success": kind = ArrowKind.Success; rest = head[first.Length..].Trim(); break;
             case "failure": kind = ArrowKind.Failure; rest = head[first.Length..].Trim(); break;
             case "always": kind = ArrowKind.Always; rest = head[first.Length..].Trim(); break;
@@ -326,17 +336,20 @@ internal static class AutomationParser
         if (first.Equals("when", StringComparison.OrdinalIgnoreCase) && cond == null)
         { f.Errors.Add($"line {ln}: \"when\" needs a command, e.g.  when powershell -c \"exit 0\" -> next"); return; }
 
+        if (otherwise && (cond != null || exitCode != null || contains != null))
+        { f.Errors.Add($"line {ln}: \"otherwise\" fires when nothing else did, so it cannot have conditions of its own"); return; }
+
         var targets = tail.Split(new[] { ',', ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
         if (targets.Length == 0) { f.Errors.Add($"line {ln}: the arrow has no target cell after \"->\""); return; }
         foreach (var to in targets)
-            cell.Out.Add(new AutoArrow { Kind = kind, When = cond, ExitCode = exitCode, Contains = contains, Color = color, Name = name, To = to, Line = ln });
+            cell.Out.Add(new AutoArrow { Kind = kind, Otherwise = otherwise, When = cond, ExitCode = exitCode, Contains = contains, Color = color, Name = name, To = to, Line = ln });
     }
 
     private static void SetStep(AutoFile f, AutoCell cell, StepKind kind, int ln)
     {
         if (cell.Step != StepKind.None)
         {
-            f.Errors.Add($"line {ln}: cell \"{cell.Id}\" already has a step; use only one of run / http / notify / wait");
+            f.Errors.Add($"line {ln}: cell \"{cell.Id}\" already has a step; use only one of run / http / notify / wait / status / upload");
             return;
         }
         cell.Step = kind;
@@ -376,6 +389,14 @@ internal static class AutomationParser
                 { f.Errors.Add($"line {ln}: \"http\" needs [METHOD] and a URL starting with http:// or https://"); break; }
                 SetStep(f, cell, StepKind.Http, ln); cell.HttpMethod = method; cell.HttpUrl = url; break;
             }
+            case "status":
+                SetStep(f, cell, StepKind.Status, ln); break;      // the text after the colon is only a note ("incoming")
+            case "upload":
+                if (val.Length == 0) { f.Errors.Add($"line {ln}: \"upload\" needs the path of the file to send"); break; }
+                SetStep(f, cell, StepKind.Upload, ln); cell.UploadFile = val; break;
+            case "to":
+                if (val.Length == 0) { f.Errors.Add($"line {ln}: \"to\" needs a target, e.g.  to: dropbox /Reports/  or  to: post https://example.com/upload"); break; }
+                cell.UploadTo = val; break;
             case "wait":
                 if (double.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out var secs) && secs >= 0 && secs <= 86400)
                 { SetStep(f, cell, StepKind.Wait, ln); cell.WaitSeconds = secs; }
@@ -408,7 +429,7 @@ internal static class AutomationParser
                 }
                 break;
             default:
-                f.Errors.Add($"line {ln}: unknown setting \"{key}\" (known: title, note, at, run, http, notify, wait, body, header, level, timeout, join)");
+                f.Errors.Add($"line {ln}: unknown setting \"{key}\" (known: title, note, at, run, http, notify, wait, status, upload, to, body, header, level, timeout, join)");
                 break;
         }
     }
@@ -431,6 +452,19 @@ internal static class AutomationParser
                     f.Warnings.Add($"line {a.Line}: the same arrow \"{a.Label} -> {a.To}\" is written twice");
             }
             if (c.Step != StepKind.Notify && c.Level != "info") f.Warnings.Add($"line {c.Line}: \"level\" only affects notify cells");
+            if (c.Step == StepKind.Upload)
+            {
+                var kind = FirstWord(c.UploadTo).ToLowerInvariant();
+                var rest = c.UploadTo[FirstWord(c.UploadTo).Length..].Trim();
+                if (c.UploadTo.Length == 0) f.Errors.Add($"line {c.Line}: cell \"{c.Id}\" uploads a file but has no \"to:\" (e.g.  to: dropbox /Reports/)");
+                else if (kind is not ("dropbox" or "post" or "put") || rest.Length == 0)
+                    f.Errors.Add($"line {c.Line}: cell \"{c.Id}\": \"to\" must be  dropbox <path>,  post <url>  or  put <url>");
+                else if (kind != "dropbox" && !rest.StartsWith("http://", StringComparison.OrdinalIgnoreCase) && !rest.StartsWith("https://", StringComparison.OrdinalIgnoreCase) && !rest.Contains("{{", StringComparison.Ordinal))
+                    f.Errors.Add($"line {c.Line}: cell \"{c.Id}\": the {kind} URL must start with http:// or https://");
+            }
+            else if (c.UploadTo.Length > 0) f.Warnings.Add($"line {c.Line}: \"to\" only affects upload cells");
+            if (c.Step == StepKind.Status && !f.Cells.Any(o => o.Out.Any(a => a.To.Equals(c.Id, StringComparison.OrdinalIgnoreCase))))
+                f.Warnings.Add($"line {c.Line}: status cell \"{c.Id}\" has no arrow pointing at it, so there is no result to read (it will report exit 0)");
         }
 
         if (f.Errors.Count > 0) return;
