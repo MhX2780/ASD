@@ -35,6 +35,10 @@ public static class ToolRegistry
         new("upload", "Upload File", "Send a file to Dropbox or to any web address (POST or PUT), with a progress bar", "\uE898", "main",
             "upload file send dropbox cloud storage post put multipart share link transfer", () => new UploadPage()),
 
+        // ── Extensions (own navigation item): the store; each extension opens its own small window ──
+        new("extensions", "Extensions", "Add tools to ASD from the extensions store: search, install, update, remove", "\uEA86", "main",
+            "extensions add-ons plugins store install update marketplace", () => new ExtensionsPage()),
+
         // ── Toolbox: every tool ──
         new("ico", "Image → ICO", "PNG, JPG, SVG … to a multi-size icon.ico", "\uE91B", "more",
             "image icon ico png jpg jpeg svg bmp gif tiff webp convert favicon", () => new IcoPage()),

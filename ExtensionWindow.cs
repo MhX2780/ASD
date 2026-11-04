@@ -13,15 +13,15 @@ namespace ASD;
 ///   loading (progress, like the update window)  →  list (tabs Available / New / Updates / Installed + search)
 ///   →  one extension (Back, Install)  →  install steps (newer version? license, place, needs, confirm, install).
 /// </summary>
-internal sealed class ExtensionsWindow : Window
+internal sealed class ExtensionWindow : Window
 {
-    private static ExtensionsWindow? _instance;
+    private static ExtensionWindow? _instance;
 
-    /// <summary>Opens the window (or brings the open one to the front) and loads the extensions.</summary>
-    public static void ShowWindow()
+    /// <summary>Opens the window of one extension (details, install, update, remove). One such window at a time.</summary>
+    public static void ShowFor(ExtInfo e, List<ExtInfo> all, Action<List<ExtInfo>> changed)
     {
-        if (_instance != null) { _instance.Activate(); return; }
-        _instance = new ExtensionsWindow();
+        _instance?.Close();
+        _instance = new ExtensionWindow(e, all, changed);
         _instance.Activate();
     }
 
@@ -40,20 +40,21 @@ internal sealed class ExtensionsWindow : Window
     private readonly ProgressBar _bar = new() { Minimum = 0, Maximum = 100, MaxWidth = 420, Visibility = Visibility.Collapsed };
     private readonly TextBlock _stats = new() { Opacity = 0.7, FontSize = 12, TextAlignment = TextAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Visibility = Visibility.Collapsed };
     private readonly Button _retry = new() { Content = "Try again", Visibility = Visibility.Collapsed };
-    private readonly Button _toList = new() { Content = "Back to the list", Visibility = Visibility.Collapsed };
+    private readonly Button _toList = new() { Content = "Back to the extension", Visibility = Visibility.Collapsed };
     private readonly Button _restart = new() { Content = "Restart ASD now", Visibility = Visibility.Collapsed };
     private readonly Button _close = new() { Content = "Close", Visibility = Visibility.Collapsed };
 
-    private List<ExtInfo> _all = new();
-    private string _tab = "all";          // all | new | updates | installed
-    private string _query = "";
+    private readonly ExtInfo _e;
+    private readonly Action<List<ExtInfo>> _changed;
+    private List<ExtInfo> _all;
     private bool _busy;                   // an install is running: the window must not start another job
 
-    private ExtensionsWindow()
+    private ExtensionWindow(ExtInfo e, List<ExtInfo> all, Action<List<ExtInfo>> changed)
     {
-        Title = "Extensions";
+        _e = e; _all = all; _changed = changed;
+        Title = e.Name;
         SystemBackdrop = new MicaBackdrop();
-        AppWindow.Title = "Extensions";
+        AppWindow.Title = e.Name;
 
         _root.RequestedTheme = SettingsStore.Get("ThemeMode", "auto") switch
         {
@@ -66,7 +67,7 @@ internal sealed class ExtensionsWindow : Window
         _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         var titleBar = new TitleBar
         {
-            Title = "Extensions", Background = new SolidColorBrush(Colors.Transparent),
+            Title = e.Name, Background = new SolidColorBrush(Colors.Transparent),
             IsBackButtonVisible = false, IsPaneToggleButtonVisible = false,
         };
         Grid.SetRow(titleBar, 0);
@@ -81,13 +82,14 @@ internal sealed class ExtensionsWindow : Window
         Closed += (_, _) =>
         {
             _cts.Cancel();
-            _instance = null;
+            if (ReferenceEquals(_instance, this)) _instance = null;
+            try { _changed(_all); } catch { /* the page may be gone */ }
             _ = (App.MainWindow as MainWindow)?.RefreshExtensionsBadgeAsync(force: true);     // the number may have changed
         };
-        _root.Loaded += async (_, _) =>
+        _root.Loaded += (_, _) =>
         {
             CursorHelper.ApplyPointer(_root);
-            await LoadAsync();
+            ShowDetails(_e);
         };
     }
 
@@ -113,7 +115,7 @@ internal sealed class ExtensionsWindow : Window
             if (main != null) SetWindowLongPtr(hwnd, GWLP_HWNDPARENT, WinRT.Interop.WindowNative.GetWindowHandle(main));
 
             double scale = GetDpiForWindow(hwnd) / 96.0;
-            int w = (int)(880 * scale), h = (int)(700 * scale);
+            int w = (int)(640 * scale), h = (int)(600 * scale);
             AppWindow.Resize(new SizeInt32(w, h));
 
             RectInt32 area;
@@ -212,8 +214,8 @@ internal sealed class ExtensionsWindow : Window
         _statusView.Children.Add(_bar);
         _statusView.Children.Add(_stats);
         _statusView.Children.Add(buttons);
-        _retry.Click += async (_, _) => await LoadAsync();
-        _toList.Click += (_, _) => ShowBrowse();
+        _retry.Click += (_, _) => ShowDetails(_e);
+        _toList.Click += (_, _) => ShowDetails(_e);
         _close.Click += (_, _) => Close();
     }
 
@@ -266,161 +268,6 @@ internal sealed class ExtensionsWindow : Window
         }
     }
 
-    private async Task LoadAsync()
-    {
-        var ct = _cts.Token;
-        try
-        {
-            ShowStatus(Visual.Ring, "Looking for extensions…", "Reading the list from GitHub", bar: true, indeterminate: true);
-            _all = await ExtensionStore.RefreshAsync(new Progress<ExtProgress>(OnProgress), ct);
-            ShowBrowse();
-        }
-        catch (OperationCanceledException) { /* window closed */ }
-        catch (Exception ex)
-        {
-            ShowStatus(Visual.Error, "Could not load the extensions", ex.Message, retry: true, close: true);
-        }
-    }
-
-    // ───────── the list ─────────
-
-    private ItemsRepeater? _cards;
-    private TextBlock? _empty;
-    private SelectorBar? _tabs;
-    private bool _building;
-
-    private bool Matches(ExtInfo e)
-    {
-        var ok = _tab switch { "new" => e.IsNew, "updates" => e.HasUpdate, "installed" => e.Installed, _ => true };
-        if (!ok) return false;
-        var q = _query.Trim().ToLowerInvariant();
-        if (q.Length == 0) return true;
-        var hay = $"{e.Name} {e.Id} {e.Description} {e.Author}".ToLowerInvariant();
-        return q.Split(' ', StringSplitOptions.RemoveEmptyEntries).All(hay.Contains);
-    }
-
-    private void ShowBrowse()
-    {
-        _building = true;
-        var grid = new Grid { Margin = new Thickness(28, 0, 28, 20), RowSpacing = 12 };
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-
-        // header: title + refresh
-        var head = new Grid();
-        head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var titles = new StackPanel { Spacing = 2 };
-        titles.Children.Add(Text("Extensions", 26, bold: true));
-        titles.Children.Add(Text(ExtensionStore.Offline ? "No connection: showing the saved list." : "Add tools to ASD. Each one is a small add-on from the ASD-Extensions store.", 13, opacity: 0.7));
-        var refresh = new Button { Content = new FontIcon { Glyph = "", FontSize = 14 }, VerticalAlignment = VerticalAlignment.Center };
-        ToolTipService.SetToolTip(refresh, "Look for new extensions");
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(refresh, "Refresh extensions");
-        refresh.Click += async (_, _) => await LoadAsync();
-        Grid.SetColumn(refresh, 1);
-        head.Children.Add(titles);
-        head.Children.Add(refresh);
-        Grid.SetRow(head, 0);
-        grid.Children.Add(head);
-
-        // tabs + search
-        var bar = new Grid { ColumnSpacing = 12 };
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(280) });
-        _tabs = new SelectorBar { HorizontalAlignment = HorizontalAlignment.Left };
-        void AddTab(string tag, string text, int count)
-        {
-            var item = new SelectorBarItem { Text = count >= 0 ? $"{text} ({count})" : text, Tag = tag };
-            _tabs.Items.Add(item);
-            if (tag == _tab) _tabs.SelectedItem = item;
-        }
-        AddTab("all", "Available", _all.Count);
-        AddTab("new", "New", _all.Count(x => x.IsNew));
-        AddTab("updates", "Updates", _all.Count(x => x.HasUpdate));
-        AddTab("installed", "Installed", _all.Count(x => x.Installed));
-        if (_tabs.SelectedItem == null) _tabs.SelectedItem = _tabs.Items[0];
-        _tabs.SelectionChanged += (s, _) =>
-        {
-            if (_building) return;
-            if (s.SelectedItem is SelectorBarItem { Tag: string t }) { _tab = t; RebuildCards(); }
-        };
-        var search = new AutoSuggestBox { PlaceholderText = "Search extensions", QueryIcon = new SymbolIcon(Symbol.Find), Text = _query, VerticalAlignment = VerticalAlignment.Center };
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(search, "Search extensions");
-        search.TextChanged += (s, a) =>
-        {
-            if (_building || a.Reason != AutoSuggestionBoxTextChangeReason.UserInput) return;
-            _query = s.Text;
-            RebuildCards();
-        };
-        Grid.SetColumn(search, 1);
-        bar.Children.Add(_tabs);
-        bar.Children.Add(search);
-        Grid.SetRow(bar, 1);
-        grid.Children.Add(bar);
-
-        // cards
-        _cards = new ItemsRepeater
-        {
-            Layout = new UniformGridLayout { MinItemWidth = 300, MinItemHeight = 124, MinRowSpacing = 12, MinColumnSpacing = 12, ItemsStretch = UniformGridLayoutItemsStretch.Fill },
-        };
-        _empty = Text("", 14, opacity: 0.7);
-        _empty.Margin = new Thickness(0, 24, 0, 0);
-        _empty.HorizontalAlignment = HorizontalAlignment.Center;
-        var scroll = new ScrollViewer
-        {
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Content = new StackPanel { Children = { _cards, _empty } },
-        };
-        Grid.SetRow(scroll, 2);
-        grid.Children.Add(scroll);
-
-        _building = false;
-        RebuildCards();
-        Show(grid);
-    }
-
-    private void RebuildCards()
-    {
-        if (_cards == null || _empty == null) return;
-        var items = _all.Where(Matches).Select(Card).Cast<UIElement>().ToList();
-        _cards.ItemsSource = items;
-        _empty.Text = items.Count > 0 ? "" : _all.Count == 0 ? "The store has no extensions yet."
-            : _tab == "new" ? "Nothing new." : _tab == "updates" ? "Everything is up to date." : _tab == "installed" ? "No extension is installed." : "No extension matches your search.";
-        _empty.Visibility = items.Count > 0 ? Visibility.Collapsed : Visibility.Visible;
-        Cursors();
-    }
-
-    private Button Card(ExtInfo e)
-    {
-        var texts = new StackPanel { Spacing = 3 };
-        var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        nameRow.Children.Add(new TextBlock { Text = e.Name, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, FontSize = 15, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 170 });
-        if (e.HasUpdate) nameRow.Children.Add(Tag("Update", true));
-        else if (e.IsNew) nameRow.Children.Add(Tag("New", true));
-        else if (e.Installed) nameRow.Children.Add(Tag("Installed", false));
-        texts.Children.Add(nameRow);
-        var who = string.Join("  ·  ", new[] { e.Author, "v" + (e.Version.Length > 0 ? e.Version : "?") }.Where(s => s.Length > 0));
-        texts.Children.Add(new TextBlock { Text = who, FontSize = 12, Opacity = 0.65 });
-        texts.Children.Add(new TextBlock { Text = e.Description, FontSize = 13, Opacity = 0.85, TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 2 });
-
-        var inner = new Grid { ColumnSpacing = 12 };
-        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        inner.Children.Add(IconOf(e, 46));
-        Grid.SetColumn(texts, 1);
-        inner.Children.Add(texts);
-
-        var card = new Button
-        {
-            Content = inner, Padding = new Thickness(14), HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch,
-            HorizontalContentAlignment = HorizontalAlignment.Left, VerticalContentAlignment = VerticalAlignment.Top, CornerRadius = new CornerRadius(8),
-        };
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(card, "Extension " + e.Name);
-        card.Click += (_, _) => ShowDetails(e);
-        return card;
-    }
-
     // ───────── one extension ─────────
 
     private void ShowDetails(ExtInfo e)
@@ -429,10 +276,6 @@ internal sealed class ExtensionsWindow : Window
 
         var page = new StackPanel { Spacing = 16, Margin = new Thickness(28, 0, 28, 24), MaxWidth = 760, HorizontalAlignment = HorizontalAlignment.Left };
 
-        var back = new Button { Content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { new FontIcon { Glyph = "", FontSize = 14 }, new TextBlock { Text = "Back" } } } };
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(back, "Back to the list");
-        back.Click += (_, _) => ShowBrowse();
-        page.Children.Add(back);
 
         // header
         var head = new Grid { ColumnSpacing = 16 };
@@ -476,8 +319,8 @@ internal sealed class ExtensionsWindow : Window
                 {
                     var restartNeeded = ExtensionStore.Remove(e);
                     if (e.PackageDir == null) _all.Remove(e);     // it is not in the store any more
-                    if (restartNeeded) ShowStatus(Visual.Success, $"{e.Name} will be removed", "It is running right now, so ASD finishes the removal when it restarts.", toList: true, restart: true);
-                    else ShowBrowse();
+                    if (restartNeeded) ShowStatus(Visual.Success, $"{e.Name} will be removed", "It is running right now, so ASD finishes the removal when it restarts.", close: true, restart: true);
+                    else Close();
                 }
                 catch (Exception ex) { ShowStatus(Visual.Error, "Could not remove it", ex.Message, close: true, toList: true); }
             };
@@ -506,7 +349,7 @@ internal sealed class ExtensionsWindow : Window
                 if (ExtensionLoader.IsDisabled(e.Id))
                 {
                     var again = new Button { Content = "Switch it on again" };
-                    again.Click += (_, _) => { ExtensionLoader.Enable(e.Id); ShowStatus(Visual.Success, "It is switched on", "It starts the next time ASD starts.", toList: true, restart: true); };
+                    again.Click += (_, _) => { ExtensionLoader.Enable(e.Id); ShowStatus(Visual.Success, "It is switched on", "It starts the next time ASD starts.", close: true, restart: true); };
                     page.Children.Add(again);
                 }
             }
@@ -702,7 +545,7 @@ internal sealed class ExtensionsWindow : Window
             _bar.Value = 0;
             await ExtensionStore.InstallAsync(e, placement, new Progress<ExtProgress>(OnProgress), ct);
             ShowStatus(Visual.Success, $"{e.Name} is installed",
-                "Shown in: " + (placement == "main" ? "the navigation bar" : "More tools") + ". Restart ASD to start it.", toList: true, restart: true);
+                "Shown in: " + (placement == "main" ? "the navigation bar" : "More tools") + ". Restart ASD to start it.", close: true, restart: true);
         }
         catch (OperationCanceledException) { /* window closed */ }
         catch (Exception ex)

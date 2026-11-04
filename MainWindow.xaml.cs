@@ -124,7 +124,6 @@ public sealed partial class MainWindow : Window
         if (tag == "search") { FocusSearch(); return; }
         if (tag == "bell") { _ = ShowNotificationsAsync(); return; }   // a dialog, not a page
         if (tag == "updates") { UpdateWindow.ShowWindow(); return; }   // opens its own window, no page
-        if (tag == "extensions") { ExtensionsWindow.ShowWindow(); return; }   // opens its own window, no page
         OpenTool(tag);
     }
 

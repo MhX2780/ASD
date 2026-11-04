@@ -72,7 +72,7 @@
             <NavigationViewItem Content="Upload File" Tag="upload" ToolTipService.ToolTip="Upload File: send a file to Dropbox or to any web address">
                 <NavigationViewItem.Icon><FontIcon Glyph="&#xE898;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
-            <NavigationViewItem Content="Extensions" Tag="extensions" SelectsOnInvoked="False" ToolTipService.ToolTip="Extensions: add more tools to ASD">
+            <NavigationViewItem Content="Extensions" Tag="extensions" ToolTipService.ToolTip="Extensions: add more tools to ASD">
                 <NavigationViewItem.Icon><FontIcon Glyph="&#xEA86;" FontSize="16" /></NavigationViewItem.Icon>
                 <NavigationViewItem.InfoBadge>
                     <InfoBadge x:Name="ExtensionsBadge" Visibility="Collapsed" Value="0" />

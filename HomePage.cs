@@ -131,7 +131,7 @@ public sealed class HomePage : ToolPage
         list.Add(Tile("\uE72E", "Keys Store", out var keys, () => (App.MainWindow as MainWindow)?.OpenTool("keys")));
         try { keys.Text = KeyVault.Exists ? KeyVault.All().Count + (KeyVault.All().Count == 1 ? " key saved" : " keys saved") : "Not created yet"; } catch { keys.Text = "Open to see"; }
 
-        list.Add(Tile("\uEA86", "Extensions", out var ext, () => ExtensionsWindow.ShowWindow()));
+        list.Add(Tile("\uEA86", "Extensions", out var ext, () => (App.MainWindow as MainWindow)?.OpenTool("extensions")));
         try
         {
             var installed = Directory.Exists(ExtensionStore.InstalledRoot) ? Directory.GetDirectories(ExtensionStore.InstalledRoot).Count(d => !d.EndsWith(".new")) : 0;

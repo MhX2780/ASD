@@ -89,6 +89,29 @@ internal static class ExtensionStore
     private static string ListFile => Path.Combine(Root, "known.txt");      // the last list that was read
     private static string SeenFile => Path.Combine(Root, "seen.txt");       // ids the person has already seen
 
+    // ───────── a package that was unpacked beforehand next to ASD.exe ─────────
+    // Like cd-r.txt, its presence is the switch: a folder  Extensions\  next to ASD.exe holding extensions.txt (the same list as
+    // the one on GitHub) and one folder per extension (the unpacked extensions.zip). It is copied along with the app from a CD-R.
+    // When its list matches the one on GitHub nothing is downloaded; when GitHub has a different one, the whole package is downloaded.
+
+    public static string BundledDir => Path.Combine(AppContext.BaseDirectory, "Extensions");
+    private static string BundledListFile => Path.Combine(BundledDir, "extensions.txt");
+
+    public static bool HasBundled
+    {
+        get
+        {
+            try { return File.Exists(BundledListFile) && !string.Equals(Path.GetFullPath(BundledDir).TrimEnd('\\'), Path.GetFullPath(Root).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase); }
+            catch { return false; }
+        }
+    }
+
+    private static string BundledHash()
+    {
+        try { return HasBundled ? ParseList(File.ReadAllText(BundledListFile)).Hash : ""; }
+        catch { return ""; }
+    }
+
     /// <summary>True when the list could not be downloaded and the saved one is shown.</summary>
     public static bool Offline { get; private set; }
 
@@ -152,23 +175,35 @@ internal static class ExtensionStore
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
-            if (!File.Exists(ListFile) || !Directory.Exists(CacheDir))
+            var saved = File.Exists(ListFile) && Directory.Exists(CacheDir);
+            if (!saved && !HasBundled)
                 throw new InvalidOperationException("Could not reach the extensions list (" + ex.Message + ") and nothing is saved yet.");
             Offline = true;
-            listText = File.ReadAllText(ListFile);
+            listText = saved ? File.ReadAllText(ListFile) : File.ReadAllText(BundledListFile);
         }
 
         var (hash, lines) = ParseList(listText);
+        string packageRoot;
         if (!Offline)
         {
             if (hash.Length != 64) throw new InvalidDataException("The extensions list does not start with a SHA-256 hash.");
-            var have = File.Exists(HashFile) ? File.ReadAllText(HashFile).Trim() : "";
-            if (have != hash || !Directory.Exists(CacheDir))
+            if (HasBundled && BundledHash() == hash)
             {
-                await DownloadPackageAsync(hash, progress, ct);
-                File.WriteAllText(HashFile, hash);
+                packageRoot = BundledDir;                 // the package next to ASD is the current one: nothing to download
             }
+            else
+            {
+                var have = File.Exists(HashFile) ? File.ReadAllText(HashFile).Trim() : "";
+                if (have != hash || !Directory.Exists(CacheDir)) await DownloadPackageAsync(hash, progress, ct);   // it changed: all the files are downloaded
+                packageRoot = CacheDir;
+            }
+            File.WriteAllText(HashFile, hash);
             File.WriteAllText(ListFile, listText);
+        }
+        else
+        {
+            // no connection: the package that matches the saved list, else the one next to ASD
+            packageRoot = Directory.Exists(CacheDir) && File.Exists(ListFile) && !(HasBundled && BundledHash() == hash) ? CacheDir : BundledDir;
         }
 
         // first time ever: nothing is "new" yet, everything is simply there
@@ -179,7 +214,7 @@ internal static class ExtensionStore
         foreach (var l in lines)
         {
             var e = new ExtInfo { Id = l.Id, Version = l.Version, Name = l.Name, Description = l.Description };
-            var pkg = Path.Combine(CacheDir, l.Id);
+            var pkg = Path.Combine(packageRoot, l.Id);
             if (Directory.Exists(pkg)) { e.PackageDir = pkg; ReadManifest(e, Path.Combine(pkg, "extension.json")); }
             e.IsNew = !seen.Contains(l.Id);
             result.Add(e);
