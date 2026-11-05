@@ -1,0 +1,125 @@
+name: Remote Desktop (Tailscale)
+
+# Starts a Windows machine on GitHub, joins it to YOUR Tailscale network and turns Remote Desktop on,
+# so you can open it from the phone with the "Windows App" (Microsoft Remote Desktop) and use ASD on it.
+#
+# One-time setup (GitHub  ->  repo  ->  Settings  ->  Secrets and variables  ->  Actions):
+#   TS_AUTHKEY    a Tailscale auth key: admin console -> Settings -> Keys -> Generate auth key
+#                 (turn ON: Reusable, Ephemeral, Pre-approved. No tag needed.)
+#   RDP_PASSWORD  the password you will type in Windows App (12+ characters, letters + digits + a symbol)
+#
+# Use: Actions -> "Remote Desktop (Tailscale)" -> Run workflow. When the job log says "READY", open the
+# Tailscale app on the phone, copy the 100.x.y.z address of the device "asd-runner-...", and connect.
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'Keep the machine for at most this many minutes (5 - 330)'
+        default: '60'
+      idle_minutes:
+        description: 'Stop by itself after nobody was connected for this many minutes'
+        default: '10'
+      get_asd:
+        description: 'Put the latest released ASD on the desktop'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+    - name: Check the secrets
+      shell: pwsh
+      env:
+        TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+      run: |-
+        if (-not $env:TS_AUTHKEY) { throw 'The secret TS_AUTHKEY is missing (a Tailscale auth key).' }
+        if (-not $env:RDP_PASSWORD -or $env:RDP_PASSWORD.Length -lt 12) { throw 'The secret RDP_PASSWORD is missing or shorter than 12 characters.' }
+        Write-Host 'Secrets found.'
+
+    - name: Join the Tailscale network
+      uses: tailscale/github-action@v3
+      with:
+        authkey: ${{ secrets.TS_AUTHKEY }}
+        hostname: asd-runner-${{ github.run_id }}
+
+    - name: Turn Remote Desktop on
+      shell: pwsh
+      env:
+        RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+      run: |-
+        $ErrorActionPreference = 'Stop'
+
+        # allow Remote Desktop and keep Network Level Authentication on
+        Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+        Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1
+        Set-Service -Name TermService -StartupType Automatic
+        Start-Service -Name TermService
+        New-NetFirewallRule -DisplayName 'ASD RDP 3389' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Any | Out-Null
+
+        # the account you will sign in with
+        $user = $env:USERNAME
+        Set-LocalUser -Name $user -Password (ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force)
+        Write-Host "Remote Desktop is on. Sign in as: $user"
+        "RDP_USER=$user" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+    - name: Put ASD on the desktop
+      if: ${{ inputs.get_asd }}
+      shell: pwsh
+      continue-on-error: true
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |-
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        $zip = Join-Path $env:RUNNER_TEMP 'ASD.zip'
+        gh release download latest --repo "${{ github.repository }}" --pattern 'ASD.zip' --dir $env:RUNNER_TEMP --clobber
+        if (-not (Test-Path $zip)) { throw 'ASD.zip was not found in the release "latest".' }
+        Expand-Archive -Path $zip -DestinationPath (Join-Path $desktop 'ASD') -Force
+        Write-Host "ASD is on the desktop: $desktop\ASD\ASD.exe"
+
+    - name: Keep the machine until you are done
+      shell: pwsh
+      env:
+        MINUTES: ${{ inputs.minutes }}
+        IDLE_MINUTES: ${{ inputs.idle_minutes }}
+      run: |-
+        $ts = (Get-Command tailscale -ErrorAction SilentlyContinue)?.Source
+        if (-not $ts) { $ts = 'C:\Program Files\Tailscale\tailscale.exe' }
+        $ip = (& $ts ip -4 | Select-Object -First 1)
+        $name = "asd-runner-${{ github.run_id }}"
+
+        $minutes = [int]$env:MINUTES;      if ($minutes -lt 5)  { $minutes = 5 };  if ($minutes -gt 330) { $minutes = 330 }
+        $idleMax = [int]$env:IDLE_MINUTES; if ($idleMax -lt 2)  { $idleMax = 2 };  if ($idleMax -gt 120) { $idleMax = 120 }
+
+        $lines = @(
+          '## Remote Desktop is ready',
+          '',
+          "- Device in the Tailscale app: **$name**",
+          "- PC name in Windows App: **$ip**",
+          "- User account: **$env:RDP_USER** (password = the secret RDP_PASSWORD)",
+          "- Stops after $minutes minutes, or after $idleMax minutes with nobody connected. To stop now: cancel this run, or create the file C:\stop.txt on the machine."
+        )
+        $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+        Write-Host '=========================================='
+        Write-Host "READY  PC name: $ip   User: $env:RDP_USER   Device: $name"
+        Write-Host '=========================================='
+
+        $end = (Get-Date).AddMinutes($minutes)
+        $lastBusy = Get-Date
+        $everConnected = $false
+        while ((Get-Date) -lt $end) {
+          if (Test-Path 'C:\stop.txt') { Write-Host 'C:\stop.txt found: stopping.'; break }
+          $busy = @(Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue).Count -gt 0
+          if ($busy) { $lastBusy = Get-Date; $everConnected = $true }
+          # before the first connection wait at least 15 minutes, afterwards only $idleMax
+          $limit = if ($everConnected) { $idleMax } else { [Math]::Max(15, $idleMax) }
+          if (((Get-Date) - $lastBusy).TotalMinutes -ge $limit) { Write-Host "Nobody connected for $limit minutes: stopping."; break }
+          Start-Sleep -Seconds 20
+        }
+        Write-Host 'Done. The machine will be removed.'
