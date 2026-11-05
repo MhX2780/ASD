@@ -69,6 +69,37 @@ jobs:
         Write-Host "Remote Desktop is on. Sign in as: $user"
         "RDP_USER=$user" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+    - name: Make the remote session lighter (less to send over the network)
+      shell: pwsh
+      continue-on-error: true
+      run: |-
+        function Set-Dw($path, $name, $value) {
+          New-Item -Path $path -Force | Out-Null
+          New-ItemProperty -Path $path -Name $name -Value $value -PropertyType DWord -Force | Out-Null
+        }
+
+        # what the host sends: a 1280x720 picture, one monitor, medium image quality
+        $ts = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+        Set-Dw $ts 'MaxXResolution' 1280
+        Set-Dw $ts 'MaxYResolution' 720
+        Set-Dw $ts 'MaxMonitors' 1
+        Set-Dw $ts 'ImageQuality' 2
+        Set-Dw $ts 'ColorDepth' 3
+
+        # no animations, no transparency (Mica), no wallpaper: far fewer screen updates to send
+        Set-Dw 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting' 2
+        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name UserPreferencesMask -PropertyType Binary -Force -Value ([byte[]](0x90,0x12,0x03,0x80,0x10,0x00,0x00,0x00)) | Out-Null
+        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name DragFullWindows -PropertyType String -Force -Value '0' | Out-Null
+        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name Wallpaper -PropertyType String -Force -Value '' | Out-Null
+        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop\WindowMetrics' -Name MinAnimate -PropertyType String -Force -Value '0' | Out-Null
+        Set-Dw 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency' 0
+        Set-Dw 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarAnimations' 0
+
+        # leave the CPU to the desktop session
+        try { Set-MpPreference -DisableRealtimeMonitoring $true } catch { Write-Host 'Defender could not be paused (fine).' }
+        powercfg /setactive SCHEME_MIN 2>&1 | Out-Null
+        Write-Host 'Lighter remote session settings applied.'
+
     - name: Put ASD on the desktop
       if: ${{ inputs.get_asd }}
       shell: pwsh
@@ -110,13 +141,24 @@ jobs:
         Write-Host "READY  PC name: $ip   User: $env:RDP_USER   Device: $name"
         Write-Host '=========================================='
 
+        # Where is the lag from?  "relay" = the traffic goes through a Tailscale relay server (slow),
+        # "direct" = phone and machine talk to each other (fast).
+        Write-Host '--- tailscale netcheck (nearest relay servers and their delay) ---'
+        try { & $ts netcheck 2>&1 | Select-Object -First 25 | ForEach-Object { Write-Host $_ } } catch { Write-Host 'netcheck failed' }
+
         $end = (Get-Date).AddMinutes($minutes)
         $lastBusy = Get-Date
         $everConnected = $false
+        $lastRoute = Get-Date '2000-01-01'
         while ((Get-Date) -lt $end) {
           if (Test-Path 'C:\stop.txt') { Write-Host 'C:\stop.txt found: stopping.'; break }
           $busy = @(Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue).Count -gt 0
           if ($busy) { $lastBusy = Get-Date; $everConnected = $true }
+          if ($busy -and ((Get-Date) - $lastRoute).TotalSeconds -ge 90) {
+            $lastRoute = Get-Date
+            $route = & $ts status 2>&1 | Select-String -Pattern 'relay|direct' | ForEach-Object { $_.Line.Trim() }
+            Write-Host ("ROUTE  " + (Get-Date -Format 'HH:mm:ss') + "  " + ($route -join ' | '))
+          }
           # before the first connection wait at least 15 minutes, afterwards only $idleMax
           $limit = if ($everConnected) { $idleMax } else { [Math]::Max(15, $idleMax) }
           if (((Get-Date) - $lastBusy).TotalMinutes -ge $limit) { Write-Host "Nobody connected for $limit minutes: stopping."; break }
