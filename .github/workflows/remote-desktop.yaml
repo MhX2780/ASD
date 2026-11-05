@@ -95,6 +95,17 @@ jobs:
         Set-Dw 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency' 0
         Set-Dw 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarAnimations' 0
 
+        # click / hover delay: Windows itself waits before showing menus (400 ms) and hover effects (400 ms) - make that instant,
+        # let both RDP transports (UDP + TCP) be used, and refresh the desktop up to ~66 times per second instead of ~30
+        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name MenuShowDelay -PropertyType String -Force -Value '0' | Out-Null
+        New-ItemProperty -Path 'HKCU:\Control Panel\Mouse' -Name MouseHoverTime -PropertyType String -Force -Value '10' | Out-Null
+        Set-Dw $ts 'SelectTransport' 0
+        Set-Dw 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations' 'DWMFRAMEINTERVAL' 15
+
+        # Windows Server favours background services; for a desktop you drive by hand "Programs" is far more responsive
+        # (this is the same setting as System Properties -> Performance Options -> Advanced -> Processor scheduling)
+        New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name Win32PrioritySeparation -PropertyType DWord -Force -Value 38 | Out-Null
+
         # leave the CPU to the desktop session
         try { Set-MpPreference -DisableRealtimeMonitoring $true } catch { Write-Host 'Defender could not be paused (fine).' }
         powercfg /setactive SCHEME_MIN 2>&1 | Out-Null
