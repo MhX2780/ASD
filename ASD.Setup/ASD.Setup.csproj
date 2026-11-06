@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ASD.Setup: the installer for ASD (WinUI 3). Built by the "msix" job of .github/workflows/build.yaml, not by ASD.sln.
+    It is UNPACKAGED + SELF-CONTAINED + ONE FILE (supported by Windows App SDK 1.5 and newer):
+    a single ASD-Setup.exe that needs nothing installed on the PC.
+    To change its icon: replace app.ico in this folder (a 256x256 .ico is best).
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>ASD.Setup</RootNamespace>
+    <AssemblyName>ASD-Setup</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <Platform>x64</Platform>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <EnableImplicitUsings>true</EnableImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <ApplicationTitle>ASD Setup</ApplicationTitle>
+    <ApplicationDisplayVersion>1.0.0</ApplicationDisplayVersion>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- app.ico is also copied next to the exe: the window icon and the logo are loaded from it -->
+    <Content Include="app.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- the license shown on the first page -->
+    <EmbeddedResource Include="..\LICENSE" LogicalName="LICENSE" />
+    <!-- the PUBLIC certificate of the package (CI copies it here from the signing secret): the only publisher this installer trusts -->
+    <EmbeddedResource Include="ASD.cer" LogicalName="ASD.cer" Condition="Exists('ASD.cer')" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260508005" />
+  </ItemGroup>
+
+</Project>

@@ -22,6 +22,13 @@ internal static class UpdateService
     public const string RemoteInfoUrl = "https://github.com/MhX2780/ASD/releases/download/latest/update.txt";
     public const string RemoteZipUrl  = "https://github.com/MhX2780/ASD/releases/download/latest/ASD.zip";
 
+    // Installed (MSIX) ASD: msix.txt = "Version: 1.0.N.0", "SHA256: <hex>", then the same commit text as update.txt.
+    public const string MsixInfoUrl = "https://github.com/MhX2780/ASD/releases/download/latest/msix.txt";
+    public const string MsixUrl     = "https://github.com/MhX2780/ASD/releases/download/latest/ASD.msix";
+
+    /// <summary>True when this ASD can look for updates (an installed ASD always can; a plain folder needs its update.txt).</summary>
+    public static bool CanCheck => AppIdentity.IsPackaged || ReadLocal() != null;
+
     /// <summary>Shown when the installation folder can't be written to (read-only folder, CD/DVD, no permission).</summary>
     public const string NotWritableMessage = "Update Failed - CD/R or directory is not writable";
 
@@ -97,6 +104,12 @@ internal static class UpdateService
     /// <summary>Downloads the release's update.txt and compares it with the local one. Throws when GitHub can't be reached.</summary>
     public static async Task<UpdateCheckResult> CheckAsync(CancellationToken ct)
     {
+        if (AppIdentity.IsPackaged)
+        {
+            var msix = await CheckMsixAsync(ct);
+            return new UpdateCheckResult(msix.Available, $"Version {msix.Installed}", msix.Text);
+        }
+
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(ConnectTimeout);
 
@@ -132,9 +145,85 @@ internal static class UpdateService
         TryDeleteFile(ZipPath);
         TryDeleteFile(ZipPath + ".part");
 
-        await DownloadAsync(progress, ct);
+        await DownloadAsync(RemoteZipUrl, ZipPath, progress, ct);
         await Task.Run(() => Extract(progress, ct), ct);
         await StageInfoAsync(ct);
+    }
+
+    // ───────── installed (MSIX) ASD ─────────
+
+    /// <param name="Installed">The version that is installed now.</param>
+    /// <param name="Remote">The version in the release.</param>
+    /// <param name="Sha256">Hash of ASD.msix, from msix.txt.</param>
+    /// <param name="Text">The whole msix.txt (shown to the person).</param>
+    internal readonly record struct MsixCheck(bool Available, Version Installed, Version Remote, string Sha256, string Text);
+
+    private static string MsixPath => Path.Combine(WorkDir, "ASD.msix");
+
+    /// <summary>Reads msix.txt from the release and compares its version with the installed package. Throws when GitHub can't be reached.</summary>
+    public static async Task<MsixCheck> CheckMsixAsync(CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(ConnectTimeout);
+
+        string text;
+        try
+        {
+            using var response = await Http.GetAsync(MsixInfoUrl, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            response.EnsureSuccessStatusCode();
+            if (response.Content.Headers.ContentLength > MaxInfoBytes)
+                throw new InvalidDataException("The update information file is unexpectedly large.");
+            text = await response.Content.ReadAsStringAsync(timeout.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException("GitHub did not answer in time. Check your internet connection.");
+        }
+
+        string? versionText = null, hash = null;
+        foreach (var raw in Normalize(text).Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.StartsWith("Version:", StringComparison.OrdinalIgnoreCase)) versionText = line["Version:".Length..].Trim();
+            else if (line.StartsWith("SHA256:", StringComparison.OrdinalIgnoreCase)) hash = line["SHA256:".Length..].Trim();
+        }
+        if (text.Length > MaxInfoBytes || !Version.TryParse(versionText, out var remote) || hash is not { Length: 64 })
+            throw new InvalidDataException("The update information on GitHub is not valid.");
+
+        var installed = AppIdentity.PackageVersion ?? new Version(0, 0, 0, 0);
+        return new MsixCheck(remote > installed, installed, remote, hash.ToLowerInvariant(), text);
+    }
+
+    /// <summary>Downloads ASD.msix and checks it against the hash from msix.txt.</summary>
+    public static async Task DownloadMsixAsync(MsixCheck info, IProgress<UpdateProgress> progress, CancellationToken ct)
+    {
+        Directory.CreateDirectory(WorkDir);
+        TryDeleteFile(MsixPath);
+        TryDeleteFile(MsixPath + ".part");
+
+        await DownloadAsync(MsixUrl, MsixPath, progress, ct);
+
+        progress.Report(new UpdateProgress("verify", 100, true, 0, 0, 0));
+        string actual;
+        await using (var fs = new FileStream(MsixPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true))
+            actual = Convert.ToHexString(await System.Security.Cryptography.SHA256.HashDataAsync(fs, ct)).ToLowerInvariant();
+
+        if (actual != info.Sha256)
+        {
+            TryDeleteFile(MsixPath);
+            throw new InvalidDataException("The downloaded package is damaged or incomplete. Try again.");
+        }
+    }
+
+    /// <summary>
+    /// Opens the downloaded package with Windows' own installer ("App Installer"): it shows an Update button, closes ASD
+    /// if it is still open, installs the new version in one step and can start it again. The caller exits ASD right after.
+    /// </summary>
+    public static void StartMsixInstall()
+    {
+        if (!File.Exists(MsixPath))
+            throw new FileNotFoundException("The downloaded update could not be found.");
+        Process.Start(new ProcessStartInfo(MsixPath) { UseShellExecute = true });
     }
 
     /// <summary>
@@ -166,9 +255,9 @@ internal static class UpdateService
         }
     }
 
-    private static async Task DownloadAsync(IProgress<UpdateProgress> progress, CancellationToken ct)
+    private static async Task DownloadAsync(string url, string targetPath, IProgress<UpdateProgress> progress, CancellationToken ct)
     {
-        var part = ZipPath + ".part";
+        var part = targetPath + ".part";
         progress.Report(new UpdateProgress("download", 0, true, 0, 0, 0));
 
         try
@@ -176,7 +265,7 @@ internal static class UpdateService
             using var headerTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             headerTimeout.CancelAfter(ConnectTimeout);
 
-            using var response = await Http.SendAsync(new HttpRequestMessage(HttpMethod.Get, RemoteZipUrl),
+            using var response = await Http.SendAsync(new HttpRequestMessage(HttpMethod.Get, url),
                 HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token);
             response.EnsureSuccessStatusCode();
 
@@ -216,7 +305,7 @@ internal static class UpdateService
                     received / Math.Max(clock.Elapsed.TotalSeconds, 0.001)));
             }
 
-            File.Move(part, ZipPath, overwrite: true);
+            File.Move(part, targetPath, overwrite: true);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {

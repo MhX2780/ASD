@@ -86,7 +86,8 @@ internal static class ExtensionLoader
     {
         try
         {
-            var exe = Environment.ProcessPath;
+            // an installed (MSIX) ASD is started through its package; the exe inside the package can't be started by path
+            var exe = AppIdentity.LaunchTarget;
             if (!string.IsNullOrEmpty(exe))
                 Process.Start(new ProcessStartInfo("cmd.exe", $"/c timeout /t 2 /nobreak >nul & start \"\" \"{exe}\"") { CreateNoWindow = true, UseShellExecute = false });
         }

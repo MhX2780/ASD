@@ -134,6 +134,12 @@ public sealed partial class UpdateWindow : Window
 
         try
         {
+            if (AppIdentity.IsPackaged)
+            {
+                await RunMsixAsync(ct);
+                return;
+            }
+
             // 1. Can the installation folder be written to? (checked first, before anything is downloaded)
             Show(Visual.Ring, "Preparing update…", $"Checking {UpdateService.AppDir}");
             if (!await Task.Run(UpdateService.IsInstallFolderWritable, ct))
@@ -177,6 +183,30 @@ public sealed partial class UpdateWindow : Window
         }
     }
 
+    /// <summary>Installed ASD (MSIX): download ASD.msix, check its hash, hand it to Windows' installer and close.</summary>
+    private async Task RunMsixAsync(CancellationToken ct)
+    {
+        Show(Visual.Ring, "Checking for updates…", "");
+        var check = await UpdateService.CheckMsixAsync(ct);
+        if (!check.Available)
+        {
+            Show(Visual.Success, "ASD is up to date", $"Version {check.Installed}", close: true);
+            return;
+        }
+
+        Show(Visual.Logo, "Downloading update…", UpdateService.Describe(check.Text), bar: true, barIndeterminate: true);
+        await UpdateService.DownloadMsixAsync(check, new Progress<UpdateProgress>(OnProgress), ct);
+
+        Show(Visual.Logo, "Opening the installer…",
+            "Windows asks you to confirm. ASD closes now, and the installer starts it again when it is done.",
+            bar: true, barIndeterminate: true);
+        _installing = true;
+        await Task.Delay(900, ct);
+        UpdateService.StartMsixInstall();
+        await Task.Delay(1200, ct);   // let the installer window come up before ASD goes away
+        Application.Current.Exit();
+    }
+
     private void OnProgress(UpdateProgress p)
     {
         if (_installing) return;
@@ -185,7 +215,12 @@ public sealed partial class UpdateWindow : Window
         if (!p.Indeterminate) Bar.Value = p.Percent;
         if (p.Indeterminate) _taskbar?.Indeterminate(); else _taskbar?.Value(p.Percent);
 
-        if (p.Stage == "extract")
+        if (p.Stage == "verify")
+        {
+            TitleText.Text = "Checking the package…";
+            StatsText.Text = "";
+        }
+        else if (p.Stage == "extract")
         {
             TitleText.Text = "Extracting files…";
             StatsText.Text = $"{p.Percent:0}%";

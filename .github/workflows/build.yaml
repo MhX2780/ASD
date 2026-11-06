@@ -282,3 +282,146 @@ jobs:
         path: |
           build-log.txt
           ${{ runner.temp }}/publish-log.txt
+
+  # ───────────────────────────────────────────────────────────────────────────────────────────────
+  # The installed ASD: ASD.msix (signed) + ASD-Setup.exe (WinUI 3 installer, one file) + msix.txt.
+  # Runs after "build" (which creates the release "latest") and adds its files to that release.
+  # Needs two repository secrets: MSIX_PFX_BASE64 and MSIX_PFX_PASSWORD (the signing certificate).
+  # Without them this job does nothing, and everything above works as before.
+  # ───────────────────────────────────────────────────────────────────────────────────────────────
+  msix:
+    name: MSIX package and Setup
+    needs: build
+    if: ${{ always() && needs.build.result == 'success' }}
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      MSIX_PFX_BASE64: ${{ secrets.MSIX_PFX_BASE64 }}
+      MSIX_PFX_PASSWORD: ${{ secrets.MSIX_PFX_PASSWORD }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Read the signing certificate
+      id: cert
+      shell: pwsh
+      run: |-
+        if (-not $env:MSIX_PFX_BASE64 -or -not $env:MSIX_PFX_PASSWORD) {
+          Write-Host 'MSIX_PFX_BASE64 / MSIX_PFX_PASSWORD are not set: skipping the MSIX package and the installer.'
+          'have_cert=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          exit 0
+        }
+        $pfx = Join-Path $env:RUNNER_TEMP 'asd.pfx'
+        [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:MSIX_PFX_BASE64.Trim()))
+        $cert = [Security.Cryptography.X509Certificates.X509Certificate2]::new($pfx, $env:MSIX_PFX_PASSWORD)
+        Write-Host "Certificate subject: $($cert.Subject)   valid until: $($cert.NotAfter)"
+        [IO.File]::WriteAllBytes((Join-Path $env:RUNNER_TEMP 'ASD.cer'), $cert.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+        'have_cert=true'   | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+        "pfx=$pfx"         | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+        "subject=$($cert.Subject)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+    - name: Pin .NET 8
+      if: steps.cert.outputs.have_cert == 'true'
+      shell: pwsh
+      run: |-
+        Set-Content -Path 'global.json' -Value '{"sdk":{"version":"8.0.400","rollForward":"latestFeature"}}'
+        dotnet --version
+
+    - name: Setup MSBuild
+      if: steps.cert.outputs.have_cert == 'true'
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Fill in the package identity (publisher = certificate subject, version = 1.0.run.0)
+      if: steps.cert.outputs.have_cert == 'true'
+      id: manifest
+      shell: pwsh
+      env:
+        SUBJECT: ${{ steps.cert.outputs.subject }}
+      run: |-
+        $version = "1.0.$($env:GITHUB_RUN_NUMBER).0"
+        $text = [IO.File]::ReadAllText('Package.appxmanifest')
+        $text = [regex]::Replace($text, '(<Identity\s[^>]*?)Publisher="[^"]*"', { param($m) $m.Groups[1].Value + 'Publisher="' + $env:SUBJECT + '"' })
+        $text = [regex]::Replace($text, '(<Identity\s[^>]*?)Version="[^"]*"',   { param($m) $m.Groups[1].Value + 'Version="' + $version + '"' })
+        [IO.File]::WriteAllText('Package.appxmanifest', $text, [Text.UTF8Encoding]::new($false))
+        Select-String -Path 'Package.appxmanifest' -Pattern '<Identity' | ForEach-Object { Write-Host $_.Line }
+        "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+    - name: Build and sign ASD.msix
+      if: steps.cert.outputs.have_cert == 'true'
+      id: msix
+      shell: pwsh
+      env:
+        PFX: ${{ steps.cert.outputs.pfx }}
+      run: |-
+        $out = "$($env:RUNNER_TEMP -replace '\\','/')/msix-out/"
+        msbuild ASD.csproj /restore /p:Configuration=Release /p:Platform=x64 /p:RuntimeIdentifier=win-x64 `
+          /p:WindowsPackageType=MSIX /p:WindowsAppSDKSelfContained=true /p:SelfContained=true `
+          /p:GenerateAppxPackageOnBuild=true /p:AppxPackageSigningEnabled=true `
+          "/p:PackageCertificateKeyFile=$env:PFX" "/p:PackageCertificatePassword=$env:MSIX_PFX_PASSWORD" `
+          /p:AppxBundle=Never /p:UapAppxPackageBuildMode=SideloadOnly "/p:AppxPackageDir=$out" `
+          /v:minimal 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'msix-build.txt')
+        Write-Host "MSBUILD EXIT CODE: $LASTEXITCODE"
+
+        $msix = Get-ChildItem -Path $out -Recurse -Filter '*.msix' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $msix) {
+          Write-Host '=== ERRORS ==='
+          Select-String -Path (Join-Path $env:RUNNER_TEMP 'msix-build.txt') -Pattern 'error ' | Select-Object -First 30 | ForEach-Object { Write-Host $_.Line }
+          throw 'ASD.msix was not produced.'
+        }
+        $stage = Join-Path $env:RUNNER_TEMP 'release-files'
+        New-Item -ItemType Directory -Force -Path $stage | Out-Null
+        Copy-Item $msix.FullName (Join-Path $stage 'ASD.msix') -Force
+        Copy-Item (Join-Path $env:RUNNER_TEMP 'ASD.cer') (Join-Path $stage 'ASD.cer') -Force
+        $size = [math]::Round(((Get-Item (Join-Path $stage 'ASD.msix')).Length / 1MB), 1)
+        Write-Host "ASD.msix: $size MB  ($($msix.FullName))"
+
+        # msix.txt: the installed ASD reads this (version + hash) to learn whether an update exists
+        $hash = (Get-FileHash (Join-Path $stage 'ASD.msix') -Algorithm SHA256).Hash.ToLowerInvariant()
+        $subject = (git log -1 --pretty=%s).Trim()
+        $body    = (git log -1 --pretty=%b).Trim()
+        $sha     = (git rev-parse --short HEAD).Trim()
+        $date    = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'")
+        $lines = @("Version: ${{ steps.manifest.outputs.version }}", "SHA256: $hash", "", "Commit: $subject")
+        if ($body) { $lines += ""; $lines += $body }
+        $lines += ""; $lines += "SHA: $sha"; $lines += "Date: $date"; $lines += "Size: $size MB"
+        Set-Content -Path (Join-Path $stage 'msix.txt') -Value $lines -Encoding utf8
+        Get-Content (Join-Path $stage 'msix.txt')
+
+    - name: Build ASD-Setup.exe (WinUI 3, self-contained, one file)
+      if: steps.cert.outputs.have_cert == 'true'
+      id: setup
+      shell: pwsh
+      continue-on-error: true
+      run: |-
+        # the installer carries the PUBLIC certificate inside, so it trusts only our own package
+        Copy-Item (Join-Path $env:RUNNER_TEMP 'ASD.cer') 'ASD.Setup/ASD.cer' -Force
+        dotnet publish ASD.Setup/ASD.Setup.csproj -c Release -r win-x64 -p:Platform=x64 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'setup-build.txt')
+        Write-Host "PUBLISH EXIT CODE: $LASTEXITCODE"
+        $exe = Get-ChildItem -Path 'ASD.Setup' -Recurse -Filter 'ASD-Setup.exe' -ErrorAction SilentlyContinue |
+          Where-Object { $_.FullName -like '*publish*' } | Select-Object -First 1
+        if (-not $exe) {
+          Write-Host '=== ERRORS ==='
+          Select-String -Path (Join-Path $env:RUNNER_TEMP 'setup-build.txt') -Pattern 'error ' | Select-Object -First 30 | ForEach-Object { Write-Host $_.Line }
+          throw 'ASD-Setup.exe was not produced.'
+        }
+        Copy-Item $exe.FullName (Join-Path $env:RUNNER_TEMP 'release-files/ASD-Setup.exe') -Force
+        Write-Host "ASD-Setup.exe: $([math]::Round($exe.Length / 1MB, 1)) MB"
+
+    - name: Add the files to the release "latest"
+      if: steps.cert.outputs.have_cert == 'true' && steps.msix.outcome == 'success'
+      shell: pwsh
+      run: |-
+        gh release view latest *> $null
+        if ($LASTEXITCODE -ne 0) { throw 'The release "latest" does not exist yet (the build job creates it).' }
+        $stage = Join-Path $env:RUNNER_TEMP 'release-files'
+        $files = Get-ChildItem $stage -File | ForEach-Object { $_.FullName }
+        $files | ForEach-Object { Write-Host "UPLOAD: $_" }
+        gh release upload latest @files --clobber
+
+    - name: Upload the logs
+      if: always() && steps.cert.outputs.have_cert == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: msix-logs
+        path: |
+          ${{ runner.temp }}/msix-build.txt
+          ${{ runner.temp }}/setup-build.txt

@@ -48,6 +48,20 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- the installer (ASD.Setup) is its own project, built by its own CI step: keep its files out of ASD -->
+    <Compile Remove="ASD.Setup\**" />
+    <Page Remove="ASD.Setup\**" />
+    <EmbeddedResource Remove="ASD.Setup\**" />
+    <Content Remove="ASD.Setup\**" />
+    <None Remove="ASD.Setup\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- package logos, used only when ASD is built as an MSIX -->
+    <Content Include="Assets\Package\*.png" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260508005" />
     <PackageReference Include="Microsoft.Win32.SystemEvents" Version="8.0.0" />
   </ItemGroup>

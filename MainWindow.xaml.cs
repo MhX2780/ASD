@@ -445,7 +445,7 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            if (AppPaths.GithubActions || _updatePrompted || UpdateService.ReadLocal() == null) return;
+            if (AppPaths.GithubActions || _updatePrompted || !UpdateService.CanCheck) return;
 
             var check = await UpdateService.CheckAsync(CancellationToken.None);
             if (!check.Available) return;

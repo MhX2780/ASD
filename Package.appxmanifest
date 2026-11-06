@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The identity of the installed ASD (MSIX), used only by the "msix" job of .github/workflows/build.yaml.
+  A normal (unpackaged) build ignores this file.
+  CI replaces Publisher (with the subject of your signing certificate, "CN=Adva ASD") and Version (1.0.<run number>.0).
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
+  IgnorableNamespaces="uap rescap desktop6">
+
+  <Identity Name="AdvaASD.ASD" Publisher="CN=Adva ASD" Version="1.0.0.0" />
+
+  <Properties>
+    <DisplayName>ASD</DisplayName>
+    <PublisherDisplayName>Adva ASD</PublisherDisplayName>
+    <Logo>Assets\Package\StoreLogo.png</Logo>
+    <!-- keep %LocalAppData%\ASD (Keys Store, extensions, settings) in its real place, shared with older installs -->
+    <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>
+    <desktop6:RegistryWriteVirtualization>disabled</desktop6:RegistryWriteVirtualization>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.17763.0" MaxVersionTested="10.0.19041.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="x-generate" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App" Executable="$targetnametoken$.exe" EntryPoint="$targetentrypoint$">
+      <uap:VisualElements
+        DisplayName="ASD"
+        Description="ASD"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Package\Square150x150Logo.png"
+        Square44x44Logo="Assets\Package\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Package\Wide310x150Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
+  </Capabilities>
+</Package>
