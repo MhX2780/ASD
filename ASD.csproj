@@ -32,7 +32,7 @@
     <WindowsPackageType>MSIX</WindowsPackageType>
     <SelfContained>true</SelfContained>
     <GenerateAppxPackageOnBuild>true</GenerateAppxPackageOnBuild>
-    <AppxPackageSigningEnabled>true</AppxPackageSigningEnabled>
+    <AppxPackageSigningEnabled>false</AppxPackageSigningEnabled>
     <AppxBundle>Never</AppxBundle>
     <UapAppxPackageBuildMode>SideloadOnly</UapAppxPackageBuildMode>
     <AsdExtensibilityDll Condition="'$(AsdExtensibilityDll)' == ''">$(MSBuildProjectDirectory)\ASD.Extensibility\bin\x64\Release\net8.0-windows10.0.19041.0\ASD.Extensibility.dll</AsdExtensibilityDll>
