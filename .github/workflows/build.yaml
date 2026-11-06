@@ -53,11 +53,18 @@ jobs:
       if: steps.build.outcome == 'success'
       shell: pwsh
       run: |-
+        # the contract library for the extensions is built on its own first; ASD then references the finished DLL
+        # (a project reference makes the publish step look for an ASD.Extensibility.pri that does not exist)
+        dotnet build ASD.Extensibility/ASD.Extensibility.csproj -c Release -p:Platform=x64 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\publish-log.txt"
+        $contract = (Get-ChildItem -Path 'ASD.Extensibility/bin' -Recurse -Filter 'ASD.Extensibility.dll' | Select-Object -First 1).FullName
+        Write-Host "CONTRACT DLL: $contract"
+
         dotnet publish ASD.csproj -c Release -r win-x64 `
           --self-contained true `
           -p:PublishSingleFile=false `
           -p:PublishTrimmed=false `
-          -p:Platform=x64 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\publish-log.txt"
+          "-p:AsdExtensibilityDll=$contract" `
+          -p:Platform=x64 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\publish-log.txt" -Append
         $code = $LASTEXITCODE
         Write-Host "PUBLISH EXIT CODE: $code"
         if ($code -eq 0) {
