@@ -35,6 +35,7 @@
     <AppxPackageSigningEnabled>true</AppxPackageSigningEnabled>
     <AppxBundle>Never</AppxBundle>
     <UapAppxPackageBuildMode>SideloadOnly</UapAppxPackageBuildMode>
+    <AsdExtensibilityDll Condition="'$(AsdExtensibilityDll)' == ''">$(MSBuildProjectDirectory)\ASD.Extensibility\bin\x64\Release\net8.0-windows10.0.19041.0\ASD.Extensibility.dll</AsdExtensibilityDll>
   </PropertyGroup>
 
   <ItemGroup>
@@ -62,7 +63,18 @@
     <Compile Remove="ASD.Extensibility\**" />
     <EmbeddedResource Remove="ASD.Extensibility\**" />
     <None Remove="ASD.Extensibility\**" />
+  </ItemGroup>
+
+  <!-- normal build: a project reference. MSIX build: the contract DLL built by the step before (a project reference makes the
+       MSIX resource step look for a .pri file this plain library does not have). -->
+  <ItemGroup Condition="'$(AsdMsix)' != 'true'">
     <ProjectReference Include="ASD.Extensibility\ASD.Extensibility.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(AsdMsix)' == 'true'">
+    <Reference Include="ASD.Extensibility">
+      <HintPath>$(AsdExtensibilityDll)</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>

@@ -355,9 +355,15 @@ jobs:
         $out = "$($env:RUNNER_TEMP -replace '\\','/')/msix-out/"
         # AsdMsix=true switches ASD.csproj to MSIX mode (see ASD.csproj); it must not be spelled out here as
         # WindowsPackageType / GenerateAppx...: msbuild would pass those to ASD.Extensibility (a library) too.
+        # the contract DLL for the extensions is built first, on its own (ASD references the finished DLL in MSIX mode)
+        msbuild ASD.Extensibility/ASD.Extensibility.csproj /restore /p:Configuration=Release /p:Platform=x64 /v:minimal 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'msix-build.txt')
+        $contract = (Get-ChildItem -Path 'ASD.Extensibility/bin' -Recurse -Filter 'ASD.Extensibility.dll' | Select-Object -First 1).FullName
+        Write-Host "CONTRACT DLL: $contract"
+
         msbuild ASD.csproj /restore /p:Configuration=Release /p:Platform=x64 /p:RuntimeIdentifier=win-x64 `
-          /p:AsdMsix=true "/p:PackageCertificateKeyFile=$env:PFX" "/p:PackageCertificatePassword=$env:MSIX_PFX_PASSWORD" `
-          "/p:AppxPackageDir=$out" /v:minimal 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'msix-build.txt')
+          /p:AsdMsix=true "/p:AsdExtensibilityDll=$contract" `
+          "/p:PackageCertificateKeyFile=$env:PFX" "/p:PackageCertificatePassword=$env:MSIX_PFX_PASSWORD" `
+          "/p:AppxPackageDir=$out" /v:minimal 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'msix-build.txt') -Append
         Write-Host "MSBUILD EXIT CODE: $LASTEXITCODE"
 
         $msix = Get-ChildItem -Path $out -Recurse -Filter '*.msix' -ErrorAction SilentlyContinue | Select-Object -First 1
