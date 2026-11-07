@@ -14,6 +14,11 @@ public partial class App : Application
 
     public App()
     {
+        // whatever makes the installer close by itself is written to the log (%TEMP%\ASD-Setup\setup.log), so it can be read afterwards
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => Installer.Log("CRASH (unhandled): " + e.ExceptionObject);
+        TaskScheduler.UnobservedTaskException += (_, e) => Installer.Log("unobserved task error: " + e.Exception);
+        UnhandledException += (_, e) => Installer.Log("CRASH (xaml): " + e.Exception);
+        Installer.Log("ASD-Setup started: " + string.Join(' ', Environment.GetCommandLineArgs().Skip(1)));
         this.InitializeComponent();
     }
 
@@ -31,7 +36,15 @@ public partial class App : Application
             return;
         }
 
-        _window = new SetupWindow(auto: Has("--auto"));
-        _window.Activate();
+        try
+        {
+            _window = new SetupWindow(auto: Has("--auto"));
+            _window.Activate();
+        }
+        catch (Exception ex)
+        {
+            Installer.Log("the window could not be created: " + ex);
+            throw;
+        }
     }
 }
