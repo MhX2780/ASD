@@ -242,7 +242,7 @@ internal static class UpdateService
             var script = Path.Combine(WorkDir, "apply-update.ps1");
             File.WriteAllText(script, $$"""
                 $msix = {{Ps(MsixPath)}}
-                $target = {{Ps(AppIdentity.LaunchTarget)}}
+                $target = {{Ps(AppIdentity.LaunchTarget ?? "")}}
                 $log = {{Ps(UpdateLog)}}
                 $failFile = {{Ps(FailedFile)}}
                 $waitPid = {{Environment.ProcessId}}

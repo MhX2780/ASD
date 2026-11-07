@@ -29,7 +29,7 @@ public sealed class SetupWindow : Window
 
     private readonly CancellationTokenSource _cancel = new();
     private readonly Grid _root = new() { Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) };
-    private readonly Grid _frame = new() { Margin = new Thickness(36, 0, 36, 24) };
+    private readonly Grid _frame = new() { Margin = new Thickness(32, 4, 32, 22) };
     private readonly string _license = Installer.ReadText("LICENSE");
     private readonly byte[]? _certificate = Installer.ReadCertificate();
     private readonly bool _auto;   // --auto: the window does by itself what a person would click (for watching a test)
@@ -185,15 +185,39 @@ public sealed class SetupWindow : Window
             TextWrapping = TextWrapping.Wrap,
         };
 
-    /// <summary>A column in the middle of the window (horizontally and vertically), 460 wide.</summary>
-    private static StackPanel Column(double spacing)
-        => new()
+    /// <summary>
+    /// One view: the header (logo + title) on top, the content under it, and the buttons pinned to the bottom right.
+    /// It fills the width of the window (no fixed width, so nothing is cut off at the sides).
+    /// </summary>
+    private static Grid Page(FrameworkElement header, FrameworkElement? body, params Button[] buttons)
+    {
+        var grid = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch };
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        Grid.SetRow(header, 0);
+        grid.Children.Add(header);
+
+        if (body != null)
         {
-            Spacing = spacing,
-            Width = 460,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
+            body.Margin = new Thickness(0, 18, 0, 0);
+            body.VerticalAlignment = VerticalAlignment.Top;
+            Grid.SetRow(body, 1);
+            grid.Children.Add(body);
+        }
+
+        if (buttons.Length > 0)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 12, 0, 0) };
+            foreach (var b in buttons) row.Children.Add(b);
+            Grid.SetRow(row, 2);
+            grid.Children.Add(row);
+        }
+        return grid;
+    }
+
+    private static StackPanel Stack(double spacing) => new() { Spacing = spacing, HorizontalAlignment = HorizontalAlignment.Stretch };
 
     private static Button MakeButton(string label, string id, bool accent = false)
     {
@@ -206,36 +230,41 @@ public sealed class SetupWindow : Window
         return button;
     }
 
-    private static StackPanel ButtonRow(params Button[] buttons)
+    private static BitmapImage? _logo;
+
+    /// <summary>The 256px logo inside this exe (a PNG: an .ico would be decoded as its smallest, blurry frame).</summary>
+    private static BitmapImage? LoadLogo()
     {
-        var row = new StackPanel
+        if (_logo != null) return _logo;
+        try
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 10,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 12, 0, 0),
-        };
-        foreach (var b in buttons) row.Children.Add(b);
-        return row;
+            var bytes = Installer.ReadBytes("logo.png");
+            if (bytes == null) return null;
+            var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+            var write = stream.AsStreamForWrite();
+            write.Write(bytes, 0, bytes.Length);
+            write.Flush();
+            stream.Seek(0);
+            var bitmap = new BitmapImage { DecodePixelWidth = 128 };
+            bitmap.SetSource(stream);
+            return _logo = bitmap;
+        }
+        catch { return null; }
     }
 
     private static FrameworkElement Header(string title, string subtitle)
     {
         FrameworkElement logo;
-        try
-        {
-            var path = Path.Combine(AppContext.BaseDirectory, "app.ico");
-            logo = File.Exists(path)
-                ? new Image { Source = new BitmapImage(new Uri(path)), Width = 52, Height = 52 }
-                : new FontIcon { Glyph = "", FontSize = 36 };
-        }
-        catch { logo = new FontIcon { Glyph = "", FontSize = 36 }; }
+        var bitmap = LoadLogo();
+        logo = bitmap != null
+            ? new Image { Source = bitmap, Width = 64, Height = 64, VerticalAlignment = VerticalAlignment.Center }
+            : new FontIcon { Glyph = "\uE74C", FontSize = 40 };
 
         var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 2 };
-        texts.Children.Add(Text(title, 24, bold: true));
+        texts.Children.Add(Text(title, 26, bold: true));
         texts.Children.Add(Text(subtitle, 13, dim: true));
 
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16 };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16, HorizontalAlignment = HorizontalAlignment.Left };
         row.Children.Add(logo);
         row.Children.Add(texts);
         return row;
@@ -252,9 +281,7 @@ public sealed class SetupWindow : Window
 
     private void ShowLoading()
     {
-        var panel = Column(14);
-        panel.Children.Add(new ProgressRing { IsActive = true, Width = 40, Height = 40, HorizontalAlignment = HorizontalAlignment.Center });
-        Show(panel, HeightSmall);
+        Show(new ProgressRing { IsActive = true, Width = 40, Height = 40, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }, HeightSmall);
     }
 
     /// <summary>Finds out what is installed, whether an offline package is here, and what GitHub has; then shows the welcome page.</summary>
@@ -306,8 +333,8 @@ public sealed class SetupWindow : Window
     {
         bool firstInstall = installed == null;
 
-        var panel = Column(14);
-        panel.Children.Add(Header("ASD Setup", firstInstall ? "Installs ASD on this PC" : "ASD is already installed"));
+        var panel = Stack(12);
+        var header = Header("ASD Setup", firstInstall ? "Installs ASD on this PC" : "ASD is already installed");
 
         _status = Text("Looking up the latest version…", 13, dim: true);
         panel.Children.Add(_status);
@@ -350,8 +377,7 @@ public sealed class SetupWindow : Window
         var close = MakeButton("Close", "CloseButton");
         close.Click += (_, _) => Close();
 
-        panel.Children.Add(ButtonRow(close, _install));
-        Show(panel, firstInstall ? HeightFirstInstall : HeightSmall);
+        Show(Page(header, panel, close, _install), firstInstall ? HeightFirstInstall : HeightSmall);
     }
 
     private void UpdateInstallEnabled()
@@ -394,10 +420,10 @@ public sealed class SetupWindow : Window
 
     private void ShowProgress()
     {
-        var panel = Column(18);
-        panel.Children.Add(Header("Installing ASD", "Please wait"));
+        var panel = Stack(14);
+        var header = Header("Installing ASD", "Please wait");
 
-        var steps = new StackPanel { Spacing = 10, Margin = new Thickness(0, 8, 0, 0) };
+        var steps = new StackPanel { Spacing = 10 };
         for (int i = 0; i < StepNames.Length; i++)
         {
             _stepMarks[i] = new TextBlock { Text = "•", Width = 22, FontSize = 16, Opacity = 0.5 };
@@ -414,7 +440,7 @@ public sealed class SetupWindow : Window
         panel.Children.Add(_bar);
         panel.Children.Add(_detail);
 
-        Show(panel, HeightSmall);
+        Show(Page(header, panel), HeightSmall);
     }
 
     private enum Mark { Running, Done, Failed }
@@ -504,9 +530,8 @@ public sealed class SetupWindow : Window
     private void ShowDone()
     {
         var installed = Installer.FindInstalled();
-        var panel = Column(14);
-        panel.Children.Add(Header("ASD is ready", installed != null ? $"Version {Installer.VersionOf(installed)}" : "Installed"));
-        panel.Children.Add(Text("You can find ASD in the Start menu. It keeps itself up to date: when a new version is out, ASD offers it and Windows installs it in one step.", 14));
+        var header = Header("ASD is ready", installed != null ? $"Version {Installer.VersionOf(installed)}" : "Installed");
+        var text = Text("You can find ASD in the Start menu. It keeps itself up to date: when a new version is out, ASD offers it and Windows installs it in one step.", 14);
 
         var start = MakeButton("Start ASD", "StartButton", accent: true);
         start.Click += (_, _) =>
@@ -517,30 +542,29 @@ public sealed class SetupWindow : Window
         var close = MakeButton("Close", "CloseButton");
         close.Click += (_, _) => Close();
 
-        panel.Children.Add(ButtonRow(close, start));
-        Show(panel, HeightSmall);
+        Show(Page(header, text, close, start), HeightSmall);
         if (_auto) _ = AutoDoneAsync();
     }
 
     private void ShowError(string message, bool fatal = false)
     {
-        var panel = Column(14);
-        panel.Children.Add(Header("ASD was not installed", "Nothing was changed"));
-        panel.Children.Add(new TextBlock { Text = message, FontSize = 14, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true });
+        var header = Header("ASD was not installed", "Nothing was changed");
+        var text = new TextBlock { Text = message, FontSize = 14, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
 
         var close = MakeButton("Close", "CloseButton");
         close.Click += (_, _) => Close();
+        Button[] buttons;
         if (fatal)
         {
-            panel.Children.Add(ButtonRow(close));
+            buttons = new[] { close };
         }
         else
         {
             var retry = MakeButton("Try again", "RetryButton", accent: true);
             retry.Click += async (_, _) => await RunInstallAsync();
-            panel.Children.Add(ButtonRow(close, retry));
+            buttons = new[] { close, retry };
         }
-        Show(panel, HeightError);
+        Show(Page(header, new ScrollViewer { Content = text, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }, buttons), HeightError);
         if (_auto) _ = AutoErrorAsync();
     }
 }

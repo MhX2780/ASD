@@ -89,6 +89,8 @@
   <ItemGroup>
     <!-- package logos, used only when ASD is built as an MSIX -->
     <Content Include="Assets\Package\*.png" />
+    <!-- icons of the tasks in the taskbar / Start menu Jump List -->
+    <Content Include="Assets\JumpList\*.png" />
   </ItemGroup>
 
   <ItemGroup>

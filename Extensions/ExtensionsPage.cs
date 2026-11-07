@@ -91,7 +91,7 @@ public sealed class ExtensionsPage : ToolPage
             else if (e.SimpleIcon.Length > 0) inner = SimpleIcons.Create(e.SimpleIcon, box * 0.5, TextBrush());
         }
         catch { inner = null; }
-        inner ??= new FontIcon { Glyph = e.Glyph, FontSize = box * 0.5 };
+        inner ??= new FontIcon { Glyph = e.Glyph.Length > 0 ? e.Glyph : "\uEA86", FontSize = box * 0.5 };
         return new Border
         {
             Width = box, Height = box, CornerRadius = new CornerRadius(box / 5),
@@ -176,7 +176,7 @@ public sealed class ExtensionsPage : ToolPage
 
     private bool Matches(ExtInfo e)
     {
-        var ok = _tab switch { "new" => e.IsNew, "updates" => e.HasUpdate, "installed" => e.Installed, _ => true };
+        var ok = _tab switch { "new" => e.IsNew && !e.Installed, "updates" => e.HasUpdate, "installed" => e.Installed, _ => true };
         if (!ok) return false;
         var q = _query.Trim().ToLowerInvariant();
         if (q.Length == 0) return true;
@@ -203,7 +203,7 @@ public sealed class ExtensionsPage : ToolPage
             if (tag == _tab) _tabs.SelectedItem = item;
         }
         AddTab("all", "Available", _all.Count);
-        AddTab("new", "New", _all.Count(x => x.IsNew));
+        AddTab("new", "New", _all.Count(x => x.IsNew && !x.Installed));
         AddTab("updates", "Updates", _all.Count(x => x.HasUpdate));
         AddTab("installed", "Installed", _all.Count(x => x.Installed));
         if (_tabs.SelectedItem == null) _tabs.SelectedItem = _tabs.Items[0];
@@ -265,10 +265,10 @@ public sealed class ExtensionsPage : ToolPage
     {
         var texts = new StackPanel { Spacing = 3 };
         var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        nameRow.Children.Add(new TextBlock { Text = e.Name, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, FontSize = 15, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 170 });
+        nameRow.Children.Add(new TextBlock { Text = e.Name.Length > 0 ? e.Name : e.Id, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, FontSize = 15, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 170 });
         if (e.HasUpdate) nameRow.Children.Add(Badge("Update", true));
+        else if (e.Installed) nameRow.Children.Add(Badge("Installed", false));   // (an installed extension is never "New")
         else if (e.IsNew) nameRow.Children.Add(Badge("New", true));
-        else if (e.Installed) nameRow.Children.Add(Badge("Installed", false));
         texts.Children.Add(nameRow);
         var who = string.Join("  ·  ", new[] { e.Author, "v" + (e.Version.Length > 0 ? e.Version : "?") }.Where(s => s.Length > 0));
         texts.Children.Add(new TextBlock { Text = who, FontSize = 12, Opacity = 0.65 });

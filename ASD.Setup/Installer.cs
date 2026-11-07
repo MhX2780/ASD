@@ -105,7 +105,7 @@ internal static class Installer
 
     public static byte[]? ReadCertificate() => ReadBytes("ASD.cer");
 
-    private static byte[]? ReadBytes(string resourceName)
+    internal static byte[]? ReadBytes(string resourceName)
     {
         using var stream = typeof(Installer).Assembly.GetManifestResourceStream(resourceName);
         if (stream == null) return null;

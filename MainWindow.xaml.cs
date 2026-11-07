@@ -153,11 +153,11 @@ public sealed partial class MainWindow : Window
         ContentHost.Content = page;
         (page as ToolPage)?.Activate(parameter);
 
-        // "Web > HTTP Track": clicking Web opens that category of the Toolbox
+        // "Toolbox > Web > HTTP Track": Toolbox opens the Toolbox, Web opens that category of it
         if (tool.Group == "more" && page is ToolPage withPath)
         {
             var category = tool.Category;
-            withPath.SetBreadcrumb(new[] { category, tool.Title }, _ => OpenTool("more", "cat:" + category));
+            withPath.SetBreadcrumb(new[] { "Toolbox", category, tool.Title }, i => OpenTool("more", i == 0 ? "cat:" : "cat:" + category));
         }
         AppTitleBar.IsBackButtonVisible = _history.Count > 0;
 

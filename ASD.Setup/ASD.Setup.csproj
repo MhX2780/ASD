@@ -41,6 +41,8 @@
     </Content>
     <!-- the icon of .automation files (written next to ASD's data when the association is registered) -->
     <EmbeddedResource Include="app.ico" LogicalName="app.ico" />
+    <!-- the logo shown in the window (a sharp 256px picture; an .ico would give a blurry small frame) -->
+    <EmbeddedResource Include="logo.png" LogicalName="logo.png" />
     <!-- the license shown on the first page -->
     <EmbeddedResource Include="..\LICENSE" LogicalName="LICENSE" />
     <!-- the PUBLIC certificate of the package (CI copies it here from the signing secret): the only publisher this installer trusts -->

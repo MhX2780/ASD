@@ -229,12 +229,13 @@ internal static class ExtensionStore
             var e = new ExtInfo { Id = l.Id, Version = l.Version, Name = l.Name, Description = l.Description };
             var pkg = Path.Combine(packageRoot, l.Id);
             if (Directory.Exists(pkg)) { e.PackageDir = pkg; ReadManifest(e, Path.Combine(pkg, "extension.json")); }
+            if (e.Name.Length == 0) e.Name = l.Id;   // never an empty card: the id is the last resort
             e.IsNew = !seen.Contains(l.Id);
             result.Add(e);
         }
 
         // installed copies (also the ones that are no longer in the list)
-        foreach (var dir in Directory.Exists(InstalledRoot) ? Directory.GetDirectories(InstalledRoot) : Array.Empty<string>())
+        foreach (var dir in InstalledDirs())   // (a folder ending in ".new" is a copy that is not finished: not an extension)
         {
             var manifest = Path.Combine(dir, "extension.json");
             if (!File.Exists(manifest)) continue;
@@ -245,7 +246,13 @@ internal static class ExtensionStore
             if (e == null) { e = installed; e.Name = installed.Name.Length > 0 ? installed.Name : id; result.Add(e); }
             e.InstalledDir = dir;
             e.InstalledVersion = installed.Version;
+            // what the list or the package did not tell comes from the installed copy's own manifest
+            if (e.Name.Length == 0) e.Name = installed.Name.Length > 0 ? installed.Name : id;
+            if (e.Description.Length == 0) e.Description = installed.Description;
+            if (e.Version.Length == 0) e.Version = installed.Version;
             if (e.Author.Length == 0) e.Author = installed.Author;
+            if (e.Glyph.Length == 0) e.Glyph = installed.Glyph;
+            if (e.SimpleIcon.Length == 0) e.SimpleIcon = installed.SimpleIcon;
         }
 
         return result.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToList();
@@ -547,6 +554,7 @@ internal static class ExtensionStore
         MarkSeen(e.Id);
         e.InstalledDir = target;
         e.InstalledVersion = e.Version;
+        e.IsNew = false;
     }
 
     /// <summary>Removes an installed extension. Returns true when ASD must restart to finish (the DLL is in use right now).</summary>

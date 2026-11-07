@@ -37,8 +37,8 @@ public sealed class MorePage : ToolPage
 
         if (_category != null)
         {
-            // one category: its name above (this page is already the Toolbox), then its tools as cards
-            SetBreadcrumb(new[] { _category }, _ => { });
+            // one category: "Toolbox > Web" above (Toolbox goes back to all categories), then its tools as cards
+            SetBreadcrumb(new[] { "Toolbox", _category }, _ => (App.MainWindow as MainWindow)?.OpenTool("more", "cat:"));
             _host.Children.Add(MakeGrid(tools.Where(t => t.Category == _category).ToList(), favs));
         }
         else
@@ -63,7 +63,7 @@ public sealed class MorePage : ToolPage
                 Layout = new UniformGridLayout
                 {
                     MinItemWidth = 280,
-                    MinItemHeight = 132,
+                    MinItemHeight = 168,
                     MinRowSpacing = 6,
                     MinColumnSpacing = 6,
                     ItemsStretch = UniformGridLayoutItemsStretch.Fill,
@@ -87,13 +87,13 @@ public sealed class MorePage : ToolPage
                 new FontIcon { Glyph = ToolRegistry.CategoryGlyph(name), FontSize = 26, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 4) },
                 new TextBlock { Text = name, FontWeight = FontWeights.Bold, FontSize = 18, HorizontalAlignment = HorizontalAlignment.Left },
                 new TextBlock { Text = inCategory.Count == 1 ? "1 tool" : $"{inCategory.Count} tools", Opacity = 0.7, FontSize = 12, HorizontalAlignment = HorizontalAlignment.Left },
-                new TextBlock { Text = names, Opacity = 0.6, FontSize = 12, TextWrapping = TextWrapping.Wrap, HorizontalAlignment = HorizontalAlignment.Left },
+                new TextBlock { Text = names, Opacity = 0.6, FontSize = 12, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis, HorizontalAlignment = HorizontalAlignment.Left },
             },
         };
         var card = new Button
         {
             Content = content,
-            Height = 132,
+            Height = 168,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Left,
@@ -113,7 +113,7 @@ public sealed class MorePage : ToolPage
             Layout = new UniformGridLayout
             {
                 MinItemWidth = 280,
-                MinItemHeight = 118,
+                MinItemHeight = 140,
                 MinRowSpacing = 6,
                 MinColumnSpacing = 6,
                 ItemsStretch = UniformGridLayoutItemsStretch.Fill,
@@ -130,8 +130,8 @@ public sealed class MorePage : ToolPage
             Children =
             {
                 new FontIcon { Glyph = t.Glyph, FontSize = 22, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 4) },
-                new TextBlock { Text = t.Title, FontWeight = FontWeights.Bold, FontSize = 16, HorizontalAlignment = HorizontalAlignment.Left },
-                new TextBlock { Text = t.Description, Opacity = 0.7, FontSize = 12, TextWrapping = TextWrapping.Wrap, HorizontalAlignment = HorizontalAlignment.Left },
+                new TextBlock { Text = t.Title, FontWeight = FontWeights.Bold, FontSize = 16, TextTrimming = TextTrimming.CharacterEllipsis, HorizontalAlignment = HorizontalAlignment.Left },
+                new TextBlock { Text = t.Description, Opacity = 0.7, FontSize = 12, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis, HorizontalAlignment = HorizontalAlignment.Left },
             },
         };
         var main = new Button
@@ -145,6 +145,7 @@ public sealed class MorePage : ToolPage
             Margin = new Thickness(4),
         };
         AutomationProperties.SetName(main, t.Title);
+        ToolTipService.SetToolTip(main, t.Description);   // the card cuts a long description with "…"; the tip shows all of it
         main.Click += (_, _) => (App.MainWindow as MainWindow)?.OpenTool(t.Tag);
 
         var star = new Button
@@ -160,7 +161,7 @@ public sealed class MorePage : ToolPage
         ToolTipService.SetToolTip(star, fav ? "Remove from favorites" : "Add to favorites");
         star.Click += (_, _) => { ToolRegistry.ToggleFavorite(t.Tag); Rebuild(); };
 
-        var g = new Grid { Height = 118 };
+        var g = new Grid { Height = 140 };
         g.Children.Add(main);
         g.Children.Add(star);
         return g;

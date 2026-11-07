@@ -78,6 +78,8 @@ public static class ToolRegistry
             "url uri query string parameters parse", () => new UrlPage()),
         new("format", "Formatters", "XML, HTML and SQL", "\uE8D2", "more",
             "xml html sql format beautify minify pretty", () => new FormatPage()),
+        new("browser", "Web Browser", "Browse with tabs; inspect network requests, cookies and page source", "\uE774", "more",
+            "browser web internet webview edge chrome tabs inspect devtools developer tools network cookies source html page website url search", () => BrowserPage.Instance),
         new("curl", "cURL → Code", "Convert cURL to C#, JS, Python, PowerShell", "\uE756", "more",
             "curl http request fetch httpclient requests convert key keys store secret", () => new CurlPage()),
         new("httptrack", "HTTP Track", "Follow a request from send to reply: DNS, TCP, TLS, wire bytes, response, timing", "\uE895", "more",
@@ -100,7 +102,7 @@ public static class ToolRegistry
 
     private static readonly Dictionary<string, string> CategoryByTag = new()
     {
-        ["curl"] = "Web", ["httptrack"] = "Web", ["httpdl"] = "Web", ["url"] = "Web",
+        ["browser"] = "Web", ["curl"] = "Web", ["httptrack"] = "Web", ["httpdl"] = "Web", ["url"] = "Web",
         ["json"] = "Text & Data", ["regex"] = "Text & Data", ["diff"] = "Text & Data", ["encode"] = "Text & Data",
         ["format"] = "Text & Data", ["text"] = "Text & Data", ["conv"] = "Text & Data", ["time"] = "Text & Data",
         ["crypto"] = "Security", ["hash"] = "Security", ["jwt"] = "Security",

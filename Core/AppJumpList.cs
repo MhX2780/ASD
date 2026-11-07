@@ -32,6 +32,7 @@ internal static class AppJumpList
     {
         var item = JumpListItem.CreateWithArguments("--open " + tool, title);
         item.Description = description;
+        try { item.Logo = new Uri($"ms-appx:///Assets/JumpList/{tool}.png"); } catch { /* no icon: the text is still there */ }
         item.GroupName = "";   // the empty group is "Tasks"
         return item;
     }
