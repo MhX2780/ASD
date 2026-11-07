@@ -62,11 +62,12 @@
 
         <!-- the command "asd" (and asd.exe in %LocalAppData%\Microsoft\WindowsApps): the way a plain program, such as the
              file association ASD-Setup writes, can start the installed ASD with a file -->
-        <uap5:Extension Category="windows.appExecutionAlias" Executable="ASD.exe" EntryPoint="Windows.FullTrustApplication">
-          <uap5:AppExecutionAlias>
-            <desktop:ExecutionAlias Alias="asd.exe" />
-          </uap5:AppExecutionAlias>
-        </uap5:Extension>
+<uap5:Extension Category="windows.appExecutionAlias" Executable="ASD.exe" EntryPoint="Windows.FullTrustApplication">
+  <uap5:AppExecutionAlias>
+    <uap5:ExecutionAlias Alias="asd.exe" />
+  </uap5:AppExecutionAlias>
+</uap5:Extension>
+
 
         <desktop:Extension Category="windows.toastNotificationActivation">
           <desktop:ToastNotificationActivation ToastActivatorCLSID="C5BBC966-07E8-485B-A016-65207E4B8477" />
