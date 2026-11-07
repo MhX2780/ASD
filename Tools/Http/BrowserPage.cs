@@ -196,7 +196,7 @@ public sealed class BrowserPage : ToolPage
     {
         try
         {
-            _environment ??= await CoreWebView2Environment.CreateAsync(null, EnsureProfileFolder(), null);
+            _environment ??= await CoreWebView2Environment.CreateWithOptionsAsync(null, EnsureProfileFolder(), new CoreWebView2EnvironmentOptions());
             await tab.View.EnsureCoreWebView2Async(_environment);
             var core = tab.View.CoreWebView2;
 
