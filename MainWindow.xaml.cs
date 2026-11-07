@@ -135,7 +135,9 @@ public sealed partial class MainWindow : Window
         var tool = ToolRegistry.Find(tag) ?? ToolRegistry.Find("encode")!;
         SelectNavItem(tool.NavTag);
 
-        if (parameter == null && _current?.Tag == tool.Tag && ContentHost.Content != null) return;
+        // already showing this tool: nothing to do (except the Toolbox when it is showing one category: that goes back to the root)
+        if (parameter == null && _current?.Tag == tool.Tag && ContentHost.Content != null
+            && !(ContentHost.Content is MorePage { InCategory: true })) return;
 
         if (record && _current != null)
         {
@@ -150,6 +152,13 @@ public sealed partial class MainWindow : Window
         ToolRegistry.NoteUsed(tool.Tag);
         ContentHost.Content = page;
         (page as ToolPage)?.Activate(parameter);
+
+        // "Web > HTTP Track": clicking Web opens that category of the Toolbox
+        if (tool.Group == "more" && page is ToolPage withPath)
+        {
+            var category = tool.Category;
+            withPath.SetBreadcrumb(new[] { category, tool.Title }, _ => OpenTool("more", "cat:" + category));
+        }
         AppTitleBar.IsBackButtonVisible = _history.Count > 0;
 
         // Opening a tool from the Toolbox: slides in from the left.

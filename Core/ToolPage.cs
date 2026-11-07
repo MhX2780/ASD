@@ -22,6 +22,11 @@ public abstract class ToolPage : Page
     protected readonly TextBlock Status = new() { TextWrapping = TextWrapping.Wrap };
     private readonly InfoBar _statusBar = new() { IsOpen = false, IsClosable = true, Severity = InfoBarSeverity.Informational };
 
+    // the path above the title ("Toolbox > Web > HTTP Track"), Windows' own BreadcrumbBar like the address bar of File Explorer
+    private readonly BreadcrumbBar _crumb = new() { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 0, 0, -6) };
+    private int _crumbCount;
+    private Action<int>? _crumbClicked;
+
     protected ToolPage(string stateKey, string title, string subtitle)
     {
         _stateKey = stateKey;
@@ -37,10 +42,23 @@ public abstract class ToolPage : Page
         Content = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Content = new StackPanel { Padding = new Thickness(32), Spacing = 14, Children = { header, Body, _statusBar } },
+            Content = new StackPanel { Padding = new Thickness(32), Spacing = 14, Children = { _crumb, header, Body, _statusBar } },
+        };
+        _crumb.ItemClicked += (_, a) =>
+        {
+            if (a.Index < _crumbCount - 1) _crumbClicked?.Invoke(a.Index);   // the last item is this page itself
         };
         Loaded += (_, _) => CursorHelper.ApplyHandCursorToButtons(this);
         Status.RegisterPropertyChangedCallback(TextBlock.TextProperty, (_, _) => ShowStatus());
+    }
+
+    /// <summary>Shows the path above the title. <paramref name="clicked"/> gets the index of the item that was clicked (never the last one).</summary>
+    internal void SetBreadcrumb(IReadOnlyList<string> path, Action<int> clicked)
+    {
+        _crumbClicked = clicked;
+        _crumbCount = path.Count;
+        _crumb.ItemsSource = path.ToList();
+        _crumb.Visibility = path.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void ShowStatus()

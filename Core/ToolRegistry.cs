@@ -8,6 +8,9 @@ public sealed record ToolInfo(
     string Group, string Keywords, Func<UIElement> Create)
 {
     public string NavTag => Group == "more" ? "more" : Tag;
+
+    /// <summary>The Toolbox category this tool is listed under (the middle part of "Toolbox › Web › HTTP Track").</summary>
+    public string Category => ToolRegistry.CategoryOf(Tag);
 }
 
 public static class ToolRegistry
@@ -88,6 +91,35 @@ public static class ToolRegistry
     };
 
     private static readonly List<ToolInfo> Extra = new();
+
+    // ── Toolbox categories ──
+    public const string ExtensionsCategory = "Extensions";
+
+    /// <summary>The order the category cards are shown in.</summary>
+    public static readonly string[] CategoryOrder = { "Web", "Text & Data", "Security", "Images & Media", "Developer", ExtensionsCategory };
+
+    private static readonly Dictionary<string, string> CategoryByTag = new()
+    {
+        ["curl"] = "Web", ["httptrack"] = "Web", ["httpdl"] = "Web", ["url"] = "Web",
+        ["json"] = "Text & Data", ["regex"] = "Text & Data", ["diff"] = "Text & Data", ["encode"] = "Text & Data",
+        ["format"] = "Text & Data", ["text"] = "Text & Data", ["conv"] = "Text & Data", ["time"] = "Text & Data",
+        ["crypto"] = "Security", ["hash"] = "Security", ["jwt"] = "Security",
+        ["ico"] = "Images & Media", ["imgconv"] = "Images & Media",
+        ["cron"] = "Developer", ["gen"] = "Developer", ["track"] = "Developer",
+    };
+
+    /// <summary>A tool that is not in the list above (one that an extension added) is under "Extensions".</summary>
+    public static string CategoryOf(string tag) => CategoryByTag.TryGetValue(tag, out var c) ? c : ExtensionsCategory;
+
+    public static string CategoryGlyph(string category) => category switch
+    {
+        "Web" => "\uE774",
+        "Text & Data" => "\uE8FD",
+        "Security" => "\uE72E",
+        "Images & Media" => "\uEB9F",
+        "Developer" => "\uE943",
+        _ => "\uEA86",
+    };
 
     /// <summary>Every tool: ASD's own and the ones added by installed extensions.</summary>
     public static IReadOnlyList<ToolInfo> All => Extra.Count == 0 ? Base : Base.Concat(Extra).ToList();
