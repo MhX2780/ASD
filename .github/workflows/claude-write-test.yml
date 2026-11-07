@@ -1,7 +1,0 @@
-name: claude-write-test
-on: workflow_dispatch
-jobs:
-  noop:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo test
