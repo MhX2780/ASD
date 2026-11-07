@@ -216,26 +216,45 @@ internal static class Installer
             using var http = NewClient();
             var info = await FetchRemoteAsync(http, ct);
 
-            using (var response = await http.GetAsync(BaseUrl + "ASD.msix", HttpCompletionOption.ResponseHeadersRead, ct))
+            long have = File.Exists(part) ? new FileInfo(part).Length : 0;   // a download that was interrupted continues from here
+            using (var request = new HttpRequestMessage(HttpMethod.Get, BaseUrl + "ASD.msix"))
             {
-                response.EnsureSuccessStatusCode();
-                long total = response.Content.Headers.ContentLength ?? 0;
-                await using var source = await response.Content.ReadAsStreamAsync(ct);
-                await using var file = new FileStream(part, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+                if (have > 0) request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(have, null);
+                using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
 
-                var buffer = new byte[81920];
-                long done = 0, lastReport = 0;
-                var clock = Stopwatch.StartNew();
-                int read;
-                while ((read = await source.ReadAsync(buffer, ct)) > 0)
+                if (have > 0 && response.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable)
                 {
-                    await file.WriteAsync(buffer.AsMemory(0, read), ct);
-                    done += read;
-                    if (clock.ElapsedMilliseconds - lastReport < 120) continue;
-                    lastReport = clock.ElapsedMilliseconds;
-                    var speed = done / Math.Max(1, clock.Elapsed.TotalSeconds);
-                    progress.Report((total > 0 ? (double)done / total : -1,
-                        $"{Mb(done)} of {(total > 0 ? Mb(total) : "?")}  ·  {Mb((long)speed)}/s"));
+                    Log("the saved part is already complete: checking it");
+                }
+                else
+                {
+                    response.EnsureSuccessStatusCode();
+                    bool resumed = have > 0 && response.StatusCode == System.Net.HttpStatusCode.PartialContent;
+                    if (!resumed) have = 0;
+                    long length = response.Content.Headers.ContentLength ?? 0;
+                    long total = length > 0 ? length + have : 0;
+                    await using var source = await response.Content.ReadAsStreamAsync(ct);
+                    await using var file = new FileStream(part, resumed ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+
+                    var buffer = new byte[81920];
+                    long done = have, lastReport = 0;
+                    var clock = Stopwatch.StartNew();
+                    using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);   // a download that stops moving for 30 s is stopped (and can be continued)
+                    while (true)
+                    {
+                        idle.CancelAfter(TimeSpan.FromSeconds(30));
+                        int read = await source.ReadAsync(buffer, idle.Token);
+                        if (read <= 0) break;
+                        await file.WriteAsync(buffer.AsMemory(0, read), ct);
+                        done += read;
+                        if (clock.ElapsedMilliseconds - lastReport < 120) continue;
+                        lastReport = clock.ElapsedMilliseconds;
+                        var speed = (done - have) / Math.Max(1, clock.Elapsed.TotalSeconds);
+                        progress.Report((total > 0 ? (double)done / total : -1,
+                            $"{Mb(done)} of {(total > 0 ? Mb(total) : "?")}  ·  {Mb((long)speed)}/s"));
+                    }
+                    if (total > 0 && done != total)
+                        throw new SetupException("The download stopped before it finished. Press Try again: it continues from where it stopped.");
                 }
             }
 
@@ -243,7 +262,10 @@ internal static class Installer
             await using (var check = new FileStream(part, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true))
                 actual = Convert.ToHexString(await SHA256.HashDataAsync(check, ct)).ToLowerInvariant();
             if (actual != info.Sha256)
+            {
+                try { File.Delete(part); } catch { }   // a bad file must not be continued
                 throw new SetupException("The downloaded file is damaged or incomplete. Please try again.");
+            }
 
             File.Move(part, target, overwrite: true);
             return target;
@@ -256,9 +278,10 @@ internal static class Installer
         {
             throw new SetupException(e.Message);
         }
-        finally
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            try { if (File.Exists(part)) File.Delete(part); } catch { /* leftover is harmless */ }
+            // the .part file stays: the next try continues from it
+            throw new SetupException("The download stalled. Check your internet connection and press Try again: it continues from where it stopped.");
         }
     }
 
@@ -321,20 +344,156 @@ internal static class Installer
     {
         try
         {
-            var manager = new PackageManager();
-            var operation = manager.AddPackageAsync(
-                new Uri(msixPath), null,
-                DeploymentOptions.ForceUpdateFromAnyVersion | DeploymentOptions.ForceApplicationShutdown);
-            operation.Progress = (_, p) => progress.Report((p.percentage / 100.0, "Windows is installing ASD…"));
-
-            var result = await operation;
-            if (!string.IsNullOrEmpty(result.ErrorText) || result.ExtendedErrorCode != null)
-                throw Explain(result.ErrorText, result.ExtendedErrorCode?.HResult ?? 0);
+            await AddAndWaitAsync(msixPath, progress);
         }
         catch (SetupException) { throw; }
         catch (Exception e)
         {
             throw Explain(e.Message, e.HResult);
+        }
+    }
+
+    /// <summary>
+    /// Adds the package and waits for Windows. Windows can finish so fast that the "done" report never reaches us (the window then
+    /// stays on "Installing" for ever): so while waiting, the installed version is looked at too, and the wait has a limit.
+    /// </summary>
+    private static async Task AddAndWaitAsync(string msixPath, IProgress<(double Fraction, string Text)> progress, bool allowRemove = true)
+    {
+        var expected = ReadPackageVersion(msixPath);
+        Version? before = FindInstalled() is { } old ? VersionOf(old) : null;
+        Log($"installing {msixPath} (package version {expected?.ToString() ?? "?"}, installed now {before?.ToString() ?? "none"})");
+
+        DateTime? full = null;   // when Windows reported 100 %
+        var manager = new PackageManager();
+        var operation = manager.AddPackageAsync(
+            new Uri(msixPath), null,
+            DeploymentOptions.ForceUpdateFromAnyVersion | DeploymentOptions.ForceApplicationShutdown);
+        operation.Progress = (_, p) =>
+        {
+            if (p.percentage >= 100) full ??= DateTime.UtcNow;
+            progress.Report((p.percentage / 100.0, "Windows is installing ASD…"));
+        };
+
+        var task = Task.Run(async () => await operation);
+        var started = DateTime.UtcNow;
+        while (!task.IsCompleted)
+        {
+            await Task.WhenAny(task, Task.Delay(1000));
+            if (task.IsCompleted) break;
+
+            var seconds = (DateTime.UtcNow - started).TotalSeconds;
+            var installed = FindInstalled();
+            bool newer = expected != null && installed != null && VersionOf(installed) >= expected && (before == null || before < expected);
+            bool allDone = full != null && (DateTime.UtcNow - full.Value).TotalSeconds > 6;
+            if ((newer && seconds > 3) || allDone)
+            {
+                Log("Windows installed the package but did not report the end: going on");
+                progress.Report((1, "Installed."));
+                return;
+            }
+            if (seconds > 600) throw new SetupException("Windows is taking too long to install ASD. Close this window and run Setup again.");
+        }
+
+        var result = await task;
+        if (!string.IsNullOrEmpty(result.ErrorText) || result.ExtendedErrorCode != null)
+        {
+            var code = result.ExtendedErrorCode?.HResult ?? 0;
+            if (allowRemove && (uint)code == 0x80073CFB)
+            {
+                // "already installed, reinstalling is blocked" (a repair of the same version): remove it, keep the data, add it again
+                Log("the same version is already installed: removing it first (the data is kept)");
+                await RemoveAsync(progress, deleteData: false);
+                await AddAndWaitAsync(msixPath, progress, allowRemove: false);
+                return;
+            }
+            throw Explain(result.ErrorText, code);
+        }
+    }
+
+    /// <summary>The version written in the package's own AppxManifest.xml (the msix is a zip), or null.</summary>
+    private static Version? ReadPackageVersion(string msixPath)
+    {
+        try
+        {
+            using var zip = System.IO.Compression.ZipFile.OpenRead(msixPath);
+            var entry = zip.GetEntry("AppxManifest.xml");
+            if (entry == null) return null;
+            using var reader = new StreamReader(entry.Open());
+            var match = System.Text.RegularExpressions.Regex.Match(reader.ReadToEnd(), "<Identity[^>]*?\\sVersion=\"([0-9.]+)\"");
+            return match.Success && Version.TryParse(match.Groups[1].Value, out var v) ? v : null;
+        }
+        catch { return null; }
+    }
+
+    private static async Task RemoveAsync(IProgress<(double Fraction, string Text)> progress, bool deleteData)
+    {
+        var package = FindInstalled();
+        if (package == null) return;
+
+        var manager = new PackageManager();
+        var operation = manager.RemovePackageAsync(package.Id.FullName, deleteData ? RemovalOptions.None : RemovalOptions.PreserveApplicationData);
+        operation.Progress = (_, p) => progress.Report((p.percentage / 100.0, "Windows is removing ASD…"));
+
+        var task = Task.Run(async () => await operation);
+        var started = DateTime.UtcNow;
+        while (!task.IsCompleted)
+        {
+            await Task.WhenAny(task, Task.Delay(1000));
+            if (task.IsCompleted) break;
+            var seconds = (DateTime.UtcNow - started).TotalSeconds;
+            if (seconds > 3 && FindInstalled() == null) { Log("ASD is removed (Windows did not report the end)"); return; }
+            if (seconds > 300) throw new SetupException("Windows is taking too long to remove ASD. Close this window and run Setup again.");
+        }
+
+        var result = await task;
+        if (!string.IsNullOrEmpty(result.ErrorText) || result.ExtendedErrorCode != null)
+            throw Explain(result.ErrorText, result.ExtendedErrorCode?.HResult ?? 0);
+    }
+
+    /// <summary>Removes ASD from Windows. The data stays unless <paramref name="deleteData"/> (then everything ASD stored is deleted too).</summary>
+    public static async Task UninstallAsync(bool deleteData, IProgress<(double Fraction, string Text)> progress)
+    {
+        if (FindInstalled() == null) throw new SetupException("ASD is not installed.");
+        try
+        {
+            await RemoveAsync(progress, deleteData);
+        }
+        catch (SetupException) { throw; }
+        catch (Exception e)
+        {
+            throw Explain(e.Message, e.HResult);
+        }
+        progress.Report((1, "Cleaning up…"));
+        await Task.Run(() => UnregisterFileType(deleteData));
+    }
+
+    /// <summary>Takes back what RegisterFileType wrote (.automation opens in ASD) and, when asked, deletes ASD's data folder.</summary>
+    public static void UnregisterFileType(bool deleteData)
+    {
+        try
+        {
+            using (var classes = Registry.CurrentUser.OpenSubKey(@"Software\Classes", writable: true))
+            {
+                classes?.DeleteSubKeyTree(".automation", throwOnMissingSubKey: false);
+                classes?.DeleteSubKeyTree("ASD.Automation.File", throwOnMissingSubKey: false);
+            }
+            SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero);
+
+            var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ASD");
+            if (deleteData)
+            {
+                if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true);
+            }
+            else
+            {
+                var icon = Path.Combine(folder, "automation.ico");
+                if (File.Exists(icon)) File.Delete(icon);
+            }
+            Log("the .automation file type was taken back" + (deleteData ? " and ASD's data folder was deleted" : ""));
+        }
+        catch (Exception e)
+        {
+            Log("could not clean up after the uninstall: " + e.Message);
         }
     }
 

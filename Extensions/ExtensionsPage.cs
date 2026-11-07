@@ -73,12 +73,12 @@ public sealed class ExtensionsPage : ToolPage
             FontWeight = bold ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal,
         };
 
-    private static Border Badge(string text, bool accent)
+    private static Border Badge(string text, bool accent, Brush? plainText = null)
         => new()
         {
             CornerRadius = new CornerRadius(4), Padding = new Thickness(6, 1, 6, 2), VerticalAlignment = VerticalAlignment.Center,
             Background = accent ? new SolidColorBrush(AccentColor()) : new SolidColorBrush(Windows.UI.Color.FromArgb(40, 128, 128, 128)),
-            Child = new TextBlock { Text = text, FontSize = 11, Foreground = accent ? new SolidColorBrush(Colors.White) : null },
+            Child = new TextBlock { Text = text, FontSize = 11, Foreground = accent ? new SolidColorBrush(Colors.White) : plainText },
         };
 
     /// <summary>The extension's picture: its icon.png, else its Simple Icons logo, else its glyph.</summary>
@@ -267,7 +267,7 @@ public sealed class ExtensionsPage : ToolPage
         var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         nameRow.Children.Add(new TextBlock { Text = e.Name.Length > 0 ? e.Name : e.Id, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, FontSize = 15, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 170 });
         if (e.HasUpdate) nameRow.Children.Add(Badge("Update", true));
-        else if (e.Installed) nameRow.Children.Add(Badge("Installed", false));   // (an installed extension is never "New")
+        else if (e.Installed) nameRow.Children.Add(Badge("Installed", false, TextBrush()));   // (an installed extension is never "New")
         else if (e.IsNew) nameRow.Children.Add(Badge("New", true));
         texts.Children.Add(nameRow);
         var who = string.Join("  ·  ", new[] { e.Author, "v" + (e.Version.Length > 0 ? e.Version : "?") }.Where(s => s.Length > 0));

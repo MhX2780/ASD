@@ -261,17 +261,25 @@ internal static class ExtensionStore
     private static async Task DownloadPackageAsync(string expectedHash, IProgress<ExtProgress>? progress, CancellationToken ct)
     {
         var tmpZip = Path.Combine(Root, "extensions.zip.download");
+        bool finished = false;   // an interrupted download is kept (continues next time); a finished or bad one is deleted
         var tmpDir = Path.Combine(Root, "cache.new");
         try
         {
-            using (var resp = await Http.GetAsync(ZipUrl, HttpCompletionOption.ResponseHeadersRead, ct))
+            long have = File.Exists(tmpZip) ? new FileInfo(tmpZip).Length : 0;   // an interrupted download continues from here
+            var request = new HttpRequestMessage(HttpMethod.Get, ZipUrl);
+            if (have > 0) request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(have, null);
+            using (var resp = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct))
             {
-                resp.EnsureSuccessStatusCode();
-                var total = resp.Content.Headers.ContentLength ?? 0;
-                await using var input = await resp.Content.ReadAsStreamAsync(ct);
-                await using var output = File.Create(tmpZip);
+                bool complete = have > 0 && resp.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable;   // all of it was saved already
+                if (!complete) resp.EnsureSuccessStatusCode();
+                bool resumed = !complete && have > 0 && resp.StatusCode == System.Net.HttpStatusCode.PartialContent;
+                if (!resumed && !complete) have = 0;
+                long length = complete ? 0 : resp.Content.Headers.ContentLength ?? 0;
+                var total = complete ? have : length > 0 ? length + have : 0;
+                await using var input = complete ? Stream.Null : await resp.Content.ReadAsStreamAsync(ct);
+                await using var output = complete ? Stream.Null : (Stream)new FileStream(tmpZip, resumed ? FileMode.Append : FileMode.Create, FileAccess.Write);
                 var buffer = new byte[81920];
-                long got = 0; var sw = Stopwatch.StartNew(); long lastTick = 0;
+                long got = have; var sw = Stopwatch.StartNew(); long lastTick = 0;
                 int n;
                 while ((n = await input.ReadAsync(buffer, ct)) > 0)
                 {
@@ -280,26 +288,31 @@ internal static class ExtensionStore
                     if (sw.ElapsedMilliseconds - lastTick > 80)
                     {
                         lastTick = sw.ElapsedMilliseconds;
-                        progress?.Report(new ExtProgress("download", total > 0 ? got * 100.0 / total : 0, total <= 0, got, total, got / Math.Max(0.1, sw.Elapsed.TotalSeconds)));
+                        progress?.Report(new ExtProgress("download", total > 0 ? got * 100.0 / total : 0, total <= 0, got, total, (got - have) / Math.Max(0.1, sw.Elapsed.TotalSeconds)));
                     }
                 }
-                progress?.Report(new ExtProgress("download", 100, false, got, total, got / Math.Max(0.1, sw.Elapsed.TotalSeconds)));
+                progress?.Report(new ExtProgress("download", 100, false, got, total, (got - have) / Math.Max(0.1, sw.Elapsed.TotalSeconds)));
             }
 
             // the hash in the list must match the file, or the package is refused (nothing is unpacked)
             string actual;
             await using (var fs = File.OpenRead(tmpZip)) actual = Convert.ToHexString(await SHA256.HashDataAsync(fs, ct)).ToLowerInvariant();
-            if (actual != expectedHash) throw new InvalidDataException("The downloaded package does not match its SHA-256 hash, so it was not used.");
+            if (actual != expectedHash)
+            {
+                finished = true;   // a bad file must not be continued: it is deleted below
+                throw new InvalidDataException("The downloaded package does not match its SHA-256 hash, so it was not used.");
+            }
 
             progress?.Report(new ExtProgress("extract", 0, true, 0, 0, 0));
             if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
             await Task.Run(() => SafeExtract(tmpZip, tmpDir), ct);
             if (Directory.Exists(CacheDir)) Directory.Delete(CacheDir, true);
             Directory.Move(tmpDir, CacheDir);
+            finished = true;
         }
         finally
         {
-            try { if (File.Exists(tmpZip)) File.Delete(tmpZip); } catch { }
+            if (finished) { try { if (File.Exists(tmpZip)) File.Delete(tmpZip); } catch { } }
             try { if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true); } catch { }
         }
     }

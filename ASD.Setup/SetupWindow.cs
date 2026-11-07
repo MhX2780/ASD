@@ -15,6 +15,8 @@ namespace ASD.Setup;
 /// <summary>
 /// The whole installer: one window with a few views (welcome, progress, done, error), built in code like the other
 /// windows in ASD. The title bar is ASD's own: a transparent TitleBar over Mica, tall, with theme-matched caption buttons.
+/// What it can do: Install, Update, Repair, Uninstall. Every view shows where you are (Welcome > the action > Done)
+/// and every page that waits shows a progress bar.
 /// </summary>
 public sealed class SetupWindow : Window
 {
@@ -23,37 +25,59 @@ public sealed class SetupWindow : Window
 
     // window sizes in DIPs (outer size, title bar included): short, because each view only has a little to show
     private const int WindowWidth = 520;
-    private const int HeightFirstInstall = 440;   // welcome page with the license
-    private const int HeightSmall = 300;
-    private const int HeightError = 400;
+    private const int HeightFirstInstall = 480;   // welcome page with the license
+    private const int HeightSmall = 340;
+    private const int HeightConfirm = 380;
+    private const int HeightError = 440;
+
+    private enum Mode { Install, Update, Repair, Uninstall }
 
     private readonly CancellationTokenSource _cancel = new();
     private readonly Grid _root = new() { Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) };
-    private readonly Grid _frame = new() { Margin = new Thickness(32, 4, 32, 22) };
+    private readonly Grid _frame = new() { Margin = new Thickness(32, 4, 32, 12) };
     private readonly string _license = Installer.ReadText("LICENSE");
     private readonly byte[]? _certificate = Installer.ReadCertificate();
     private readonly bool _auto;   // --auto: the window does by itself what a person would click (for watching a test)
 
     // welcome view
     private TextBlock _status = new();
-    private Button _install = new();
+    private ProgressBar _prepBar = new();
+    private Button _install = new();    // Install (first time) or Update
+    private Button? _repair;            // only when ASD is already installed
+    private Button? _uninstall;         // only when ASD is already installed
     private CheckBox? _accept;          // only on a first install
+    private CheckBox? _deleteData;      // on the Uninstall page
+    private Package? _installedPkg;
+    private Mode _primaryMode = Mode.Install;
 
     // progress view
-    private readonly TextBlock[] _stepMarks = new TextBlock[2];
+    private readonly FontIcon[] _stepMarks = new FontIcon[2];
     private readonly TextBlock[] _stepTexts = new TextBlock[2];
     private ProgressBar _bar = new();
     private TextBlock _detail = new();
+    private TextBlock _percent = new();
+    private int _step;
 
+    private Mode _mode = Mode.Install;
     private bool _working;
     private bool _ready;
     private bool _placed;
     private string? _local;   // ASD.msix next to this installer
 
-    private static readonly string[] StepNames =
+    private static string[] StepNames(Mode mode) => mode switch
     {
-        "Getting ready to install",
-        "Installing ASD",
+        Mode.Uninstall => new[] { "Getting ready", "Removing ASD" },
+        Mode.Update => new[] { "Getting ready to update", "Updating ASD" },
+        Mode.Repair => new[] { "Getting ready to repair", "Repairing ASD" },
+        _ => new[] { "Getting ready to install", "Installing ASD" },
+    };
+
+    private static string Verb(Mode mode) => mode switch
+    {
+        Mode.Uninstall => "Uninstall",
+        Mode.Update => "Update",
+        Mode.Repair => "Repair",
+        _ => "Install",
     };
 
     public SetupWindow(bool auto = false)
@@ -186,7 +210,7 @@ public sealed class SetupWindow : Window
         };
 
     /// <summary>
-    /// One view: the header (logo + title) on top, the content under it, and the buttons pinned to the bottom right.
+    /// One view: the header (path + logo + title) on top, the content under it, and the buttons pinned to the bottom right.
     /// It fills the width of the window (no fixed width, so nothing is cut off at the sides).
     /// </summary>
     private static Grid Page(FrameworkElement header, FrameworkElement? body, params Button[] buttons)
@@ -209,7 +233,7 @@ public sealed class SetupWindow : Window
 
         if (buttons.Length > 0)
         {
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 12, 0, 0) };
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 12, 0, 0) };
             foreach (var b in buttons) row.Children.Add(b);
             Grid.SetRow(row, 2);
             grid.Children.Add(row);
@@ -221,13 +245,20 @@ public sealed class SetupWindow : Window
 
     private static Button MakeButton(string label, string id, bool accent = false)
     {
-        var button = new Button { Content = label, MinWidth = 110, Padding = new Thickness(18, 7, 18, 7) };
+        var button = new Button { Content = label, MinWidth = 96, Padding = new Thickness(14, 7, 14, 7) };
         AutomationProperties.SetAutomationId(button, id);   // so a test can find the button by name, not by position
-        if (accent)
-        {
-            try { button.Style = (Style)Application.Current.Resources["AccentButtonStyle"]; } catch { }
-        }
+        if (accent) SetAccent(button, true);
         return button;
+    }
+
+    private static void SetAccent(Button button, bool accent)
+    {
+        try
+        {
+            if (accent) button.Style = (Style)Application.Current.Resources["AccentButtonStyle"];
+            else button.ClearValue(FrameworkElement.StyleProperty);
+        }
+        catch { }
     }
 
     private static BitmapImage? _logo;
@@ -252,13 +283,36 @@ public sealed class SetupWindow : Window
         catch { return null; }
     }
 
-    private static FrameworkElement Header(string title, string subtitle)
+    /// <summary>Where you are: Welcome > Install (or Update, Repair, Uninstall) > Done. The step you are on is bold, finished ones have a check mark.</summary>
+    private static FrameworkElement Nav(int current, string middle)
+    {
+        var labels = new[] { "Welcome", middle, "Done" };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 0, 0, 16) };
+        for (int i = 0; i < labels.Length; i++)
+        {
+            if (i > 0) row.Children.Add(new FontIcon { Glyph = "", FontSize = 10, Opacity = 0.5, VerticalAlignment = VerticalAlignment.Center });
+            bool passed = i < current;
+            var item = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5, VerticalAlignment = VerticalAlignment.Center };
+            if (passed) item.Children.Add(new FontIcon { Glyph = "", FontSize = 11, Opacity = 0.8 });
+            item.Children.Add(new TextBlock
+            {
+                Text = labels[i],
+                FontSize = 12,
+                FontWeight = i == current ? FontWeights.SemiBold : FontWeights.Normal,
+                Opacity = i == current ? 1 : passed ? 0.8 : 0.5,
+            });
+            row.Children.Add(item);
+        }
+        return row;
+    }
+
+    private static FrameworkElement Header(string title, string subtitle, FrameworkElement? nav = null)
     {
         FrameworkElement logo;
         var bitmap = LoadLogo();
         logo = bitmap != null
             ? new Image { Source = bitmap, Width = 64, Height = 64, VerticalAlignment = VerticalAlignment.Center }
-            : new FontIcon { Glyph = "\uE74C", FontSize = 40 };
+            : new FontIcon { Glyph = "", FontSize = 40 };
 
         var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 2 };
         texts.Children.Add(Text(title, 26, bold: true));
@@ -267,7 +321,11 @@ public sealed class SetupWindow : Window
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16, HorizontalAlignment = HorizontalAlignment.Left };
         row.Children.Add(logo);
         row.Children.Add(texts);
-        return row;
+
+        var all = new StackPanel { HorizontalAlignment = HorizontalAlignment.Left };
+        if (nav != null) all.Children.Add(nav);
+        all.Children.Add(row);
+        return all;
     }
 
     private void Show(FrameworkElement view, int heightDip)
@@ -281,7 +339,10 @@ public sealed class SetupWindow : Window
 
     private void ShowLoading()
     {
-        Show(new ProgressRing { IsActive = true, Width = 40, Height = 40, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }, HeightSmall);
+        var panel = Stack(10);
+        panel.Children.Add(Text("Looking at what is installed…", 13, dim: true));
+        panel.Children.Add(new ProgressBar { IsIndeterminate = true });
+        Show(Page(Header("ASD Setup", "Getting ready", Nav(0, "Install")), panel), HeightSmall);
     }
 
     /// <summary>Finds out what is installed, whether an offline package is here, and what GitHub has; then shows the welcome page.</summary>
@@ -294,6 +355,7 @@ public sealed class SetupWindow : Window
             return;
         }
 
+        _ready = false;
         var installed = await Task.Run(Installer.FindInstalled);
         _local = Installer.LocalPackage();
         ShowWelcome(installed);
@@ -307,7 +369,7 @@ public sealed class SetupWindow : Window
             latest = await Installer.TryLatestVersionAsync();
             line = latest != null
                 ? $"Latest version on GitHub: {latest}"
-                : "GitHub could not be reached right now. Check your internet connection, then press Install.";
+                : "GitHub could not be reached right now. Check your internet connection, then press the button again.";
         }
 
         if (installed != null)
@@ -315,13 +377,22 @@ public sealed class SetupWindow : Window
             var have = Installer.VersionOf(installed);
             bool upToDate = latest != null && have >= latest;
             line = upToDate
-                ? $"ASD {have} is installed and up to date. Install again to repair it."
-                : $"ASD {have} is installed. This will update it.";
-            if (latest != null && have < latest) line += $" (Latest: {latest})";
-            _install.Content = upToDate ? "Repair" : "Update";
+                ? $"ASD {have} is installed and up to date."
+                : $"ASD {have} is installed.";
+            if (latest != null && have < latest) line += $" Version {latest} is available.";
+
+            if (upToDate)
+            {
+                // nothing to update: the main action is Repair
+                _install.Visibility = Visibility.Collapsed;
+                if (_repair != null) SetAccent(_repair, true);
+                _primaryMode = Mode.Repair;
+            }
+            else _primaryMode = Mode.Update;
         }
 
         _status.Text = line;
+        _prepBar.Visibility = Visibility.Collapsed;
         _ready = true;
         UpdateInstallEnabled();
         if (_auto) _ = AutoStartAsync();
@@ -332,12 +403,17 @@ public sealed class SetupWindow : Window
     private void ShowWelcome(Package? installed)
     {
         bool firstInstall = installed == null;
+        _installedPkg = installed;
+        _primaryMode = firstInstall ? Mode.Install : Mode.Update;
 
         var panel = Stack(12);
-        var header = Header("ASD Setup", firstInstall ? "Installs ASD on this PC" : "ASD is already installed");
+        var header = Header("ASD Setup", firstInstall ? "Installs ASD on this PC" : "ASD is already installed",
+            Nav(0, firstInstall ? "Install" : "Update"));
 
         _status = Text("Looking up the latest version…", 13, dim: true);
+        _prepBar = new ProgressBar { IsIndeterminate = true };
         panel.Children.Add(_status);
+        panel.Children.Add(_prepBar);
 
         if (firstInstall)
         {
@@ -370,18 +446,39 @@ public sealed class SetupWindow : Window
             _accept = null;   // already accepted when it was first installed
         }
 
-        _install = MakeButton("Install", "InstallButton", accent: true);
+        _install = MakeButton(firstInstall ? "Install" : "Update", "InstallButton", accent: true);
         _install.IsEnabled = false;
-        _install.Click += async (_, _) => await RunInstallAsync();
+        _install.Click += async (_, _) => await RunAsync(firstInstall ? Mode.Install : Mode.Update);
 
         var close = MakeButton("Close", "CloseButton");
         close.Click += (_, _) => Close();
 
-        Show(Page(header, panel, close, _install), firstInstall ? HeightFirstInstall : HeightSmall);
+        var buttons = new List<Button> { close };
+        _repair = null;
+        _uninstall = null;
+        if (!firstInstall)
+        {
+            _uninstall = MakeButton("Uninstall", "UninstallButton");
+            _uninstall.IsEnabled = false;
+            _uninstall.Click += (_, _) => ShowConfirmUninstall();
+            _repair = MakeButton("Repair", "RepairButton");
+            _repair.IsEnabled = false;
+            _repair.Click += async (_, _) => await RunAsync(Mode.Repair);
+            buttons.Add(_uninstall);
+            buttons.Add(_repair);
+        }
+        buttons.Add(_install);
+
+        Show(Page(header, panel, buttons.ToArray()), firstInstall ? HeightFirstInstall : HeightSmall);
     }
 
     private void UpdateInstallEnabled()
-        => _install.IsEnabled = _ready && !_working && (_accept == null || _accept.IsChecked == true);
+    {
+        bool free = _ready && !_working;
+        _install.IsEnabled = free && (_accept == null || _accept.IsChecked == true);
+        if (_repair != null) _repair.IsEnabled = free;
+        if (_uninstall != null) _uninstall.IsEnabled = free;
+    }
 
     // ───────── --auto: do what a person would do, slowly enough to be watched ─────────
 
@@ -391,8 +488,9 @@ public sealed class SetupWindow : Window
         await Task.Delay(2500);
         if (_accept != null) _accept.IsChecked = true;        // as if it was ticked
         await Task.Delay(1500);
-        if (_install.IsEnabled) await RunInstallAsync();
-        else { Installer.Log("FAILED: the Install button stayed disabled"); Finish(1); }
+        var primary = _install.Visibility == Visibility.Visible ? _install : _repair;
+        if (primary != null && primary.IsEnabled) await RunAsync(_primaryMode);
+        else { Installer.Log("FAILED: the main button stayed disabled"); Finish(1); }
     }
 
     private async Task AutoDoneAsync()
@@ -416,18 +514,43 @@ public sealed class SetupWindow : Window
         Environment.Exit(code);
     }
 
+    // ───────── 1b. are you sure (Uninstall) ─────────
+
+    private void ShowConfirmUninstall()
+    {
+        var header = Header("Remove ASD?", "It will be removed from this PC", Nav(0, "Uninstall"));
+        var panel = Stack(12);
+        panel.Children.Add(Text("ASD is removed from Windows. Your settings, keys and extensions are kept unless you tick the box below, so a later install finds them again.", 14));
+        _deleteData = new CheckBox { Content = "Also delete my settings, keys and extensions" };
+        AutomationProperties.SetAutomationId(_deleteData, "DeleteData");
+        panel.Children.Add(_deleteData);
+
+        var cancel = MakeButton("Cancel", "CancelButton");
+        cancel.Click += (_, _) => { ShowLoading(); _ = PrepareAsync(); };
+        var remove = MakeButton("Uninstall", "ConfirmUninstallButton", accent: true);
+        remove.Click += async (_, _) => await RunAsync(Mode.Uninstall);
+        Show(Page(header, panel, cancel, remove), HeightConfirm);
+    }
+
     // ───────── 2. progress ─────────
 
     private void ShowProgress()
     {
+        var names = StepNames(_mode);
         var panel = Stack(14);
-        var header = Header("Installing ASD", "Please wait");
+        var header = Header(_mode switch
+        {
+            Mode.Uninstall => "Removing ASD",
+            Mode.Update => "Updating ASD",
+            Mode.Repair => "Repairing ASD",
+            _ => "Installing ASD",
+        }, "Please wait", Nav(1, Verb(_mode)));
 
         var steps = new StackPanel { Spacing = 10 };
-        for (int i = 0; i < StepNames.Length; i++)
+        for (int i = 0; i < names.Length; i++)
         {
-            _stepMarks[i] = new TextBlock { Text = "•", Width = 22, FontSize = 16, Opacity = 0.5 };
-            _stepTexts[i] = Text(StepNames[i], 15, dim: true);
+            _stepMarks[i] = new FontIcon { Glyph = "", FontSize = 14, Opacity = 0.5, Width = 22, VerticalAlignment = VerticalAlignment.Center };
+            _stepTexts[i] = Text(names[i], 15, dim: true);
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             row.Children.Add(_stepMarks[i]);
             row.Children.Add(_stepTexts[i]);
@@ -435,79 +558,118 @@ public sealed class SetupWindow : Window
         }
         panel.Children.Add(steps);
 
-        _bar = new ProgressBar { IsIndeterminate = true, Margin = new Thickness(0, 8, 0, 0) };
+        _bar = new ProgressBar { IsIndeterminate = true, Minimum = 0, Maximum = 100, Margin = new Thickness(0, 8, 0, 0) };
         _detail = Text("", 12, dim: true);
+        _percent = Text("", 12, dim: true);
         panel.Children.Add(_bar);
         panel.Children.Add(_detail);
+        panel.Children.Add(_percent);
 
         Show(Page(header, panel), HeightSmall);
     }
 
     private enum Mark { Running, Done, Failed }
 
+    /// <summary>Fluent icons (Segoe Fluent Icons): a ring = waiting, play = running, check mark = done, cross = failed.</summary>
     private void SetStep(int index, Mark mark)
     {
         var (glyph, opacity, weight) = mark switch
         {
-            Mark.Running => ("▶", 1.0, FontWeights.SemiBold),
-            Mark.Done => ("✓", 0.9, FontWeights.Normal),
-            _ => ("✕", 1.0, FontWeights.SemiBold),
+            Mark.Running => ("", 1.0, FontWeights.SemiBold),
+            Mark.Done => ("", 0.9, FontWeights.Normal),
+            _ => ("", 1.0, FontWeights.SemiBold),
         };
-        _stepMarks[index].Text = glyph;
+        if (mark == Mark.Running) _step = index;
+        _stepMarks[index].Glyph = glyph;
         _stepMarks[index].Opacity = opacity;
         _stepTexts[index].Opacity = mark == Mark.Done ? 0.75 : 1;
         _stepTexts[index].FontWeight = weight;
     }
 
+    /// <summary>One bar for the whole job: the first step fills the first half, the second step the second half.</summary>
     private void Report((double Fraction, string Text) p)
     {
-        _bar.IsIndeterminate = p.Fraction < 0;
-        if (p.Fraction >= 0) _bar.Value = Math.Clamp(p.Fraction * 100, 0, 100);
+        if (p.Fraction < 0)
+        {
+            _bar.IsIndeterminate = true;
+        }
+        else
+        {
+            var overall = (_step + Math.Clamp(p.Fraction, 0, 1)) / 2.0 * 100;
+            _bar.IsIndeterminate = false;
+            _bar.Value = overall;
+            _percent.Text = $"{overall:0}%";
+        }
         _detail.Text = p.Text;
     }
 
     private void Note(string text)
     {
-        _bar.IsIndeterminate = true;
         _detail.Text = text;
     }
 
-    private async Task RunInstallAsync()
+    private async Task RunAsync(Mode mode)
     {
         if (_working || _certificate == null) return;
         _working = true;
-        Installer.Log("install started");
+        _mode = mode;
+        bool deleteData = _deleteData?.IsChecked == true;
+        Installer.Log($"{Verb(mode).ToLowerInvariant()} started");
         ShowProgress();
+        var names = StepNames(mode);
         var ct = _cancel.Token;
         int step = 0;
         try
         {
             var progress = new Progress<(double Fraction, string Text)>(Report);
 
-            // step 1: everything that comes before the install itself (Windows check, the package, the publisher's trust)
+            // step 1: everything that comes before the real work (Windows check, the package, the publisher's trust)
             SetStep(0, Mark.Running);
-            Note("Checking Windows…");
+            Report((0.1, "Checking Windows…"));
             Installer.CheckWindows();
 
-            Note("Getting ASD…");
-            string package = _local ?? await Installer.DownloadAsync(progress, ct);
-            if (_local != null) Note("Using the offline package.");
+            if (mode == Mode.Uninstall)
+            {
+                SetStep(0, Mark.Done);
+                step = 1;
+                SetStep(1, Mark.Running);
+                Report((0, "Windows is removing ASD…"));
+                await Installer.UninstallAsync(deleteData, progress);
+                SetStep(1, Mark.Done);
+                Installer.Log("uninstall finished");
+                ShowDone(deleteData);
+                return;
+            }
 
-            Note("Windows may ask for your permission now.");
+            string package;
+            if (_local != null)
+            {
+                Report((0.5, "Using the offline package (no download needed)."));
+                package = _local;
+            }
+            else
+            {
+                Report((0.2, "Getting ASD…"));
+                package = await Installer.DownloadAsync(progress, ct);
+            }
+
+            Report((0.95, "Windows may ask for your permission now."));
             await Installer.TrustAsync(_certificate, ct);
+            Report((1, "Ready."));
             SetStep(0, Mark.Done);
 
             // step 2: the install
             step = 1;
             SetStep(1, Mark.Running);
-            Note("");
+            Report((0, "Windows is installing ASD…"));
             await Installer.InstallAsync(package, progress);
+            Report((1, "Finishing…"));
             await Task.Run(Installer.CopyOfflineExtensions);   // an Extensions folder next to this installer, if there is one
             await Task.Run(Installer.RegisterFileType);        // .automation files open in ASD, with its icon
             SetStep(1, Mark.Done);
 
             Installer.Log("install finished");
-            ShowDone();
+            ShowDone(false);
         }
         catch (OperationCanceledException)
         {
@@ -516,7 +678,7 @@ public sealed class SetupWindow : Window
         catch (Exception e)
         {
             SetStep(step, Mark.Failed);
-            Installer.Log($"FAILED at step {step + 1} ({StepNames[step]}): {e.Message}");
+            Installer.Log($"FAILED at step {step + 1} ({names[step]}): {e.Message}");
             ShowError(e is SetupException ? e.Message : "Something unexpected happened.\n\n" + e.Message);
         }
         finally
@@ -527,11 +689,27 @@ public sealed class SetupWindow : Window
 
     // ───────── 3. done / 4. error ─────────
 
-    private void ShowDone()
+    private void ShowDone(bool dataDeleted)
     {
+        var nav = Nav(2, Verb(_mode));
+        var close = MakeButton("Close", "CloseButton");
+        close.Click += (_, _) => Close();
+
+        if (_mode == Mode.Uninstall)
+        {
+            var header = Header("ASD was removed", "Thank you for using it", nav);
+            var text = Text(dataDeleted
+                ? "ASD and its data were removed from this PC."
+                : "ASD was removed from this PC. Your settings, keys and extensions were kept: install ASD again and they are back.", 14);
+            Show(Page(header, text, close), HeightSmall);
+            if (_auto) _ = AutoErrorAsync();
+            return;
+        }
+
         var installed = Installer.FindInstalled();
-        var header = Header("ASD is ready", installed != null ? $"Version {Installer.VersionOf(installed)}" : "Installed");
-        var text = Text("You can find ASD in the Start menu. It keeps itself up to date: when a new version is out, ASD offers it and Windows installs it in one step.", 14);
+        var title = _mode switch { Mode.Update => "ASD was updated", Mode.Repair => "ASD was repaired", _ => "ASD is ready" };
+        var head = Header(title, installed != null ? $"Version {Installer.VersionOf(installed)}" : "Installed", nav);
+        var body = Text("You can find ASD in the Start menu. It keeps itself up to date: when a new version is out, ASD offers it and Windows installs it in one step.", 14);
 
         var start = MakeButton("Start ASD", "StartButton", accent: true);
         start.Click += (_, _) =>
@@ -539,16 +717,21 @@ public sealed class SetupWindow : Window
             try { Installer.Launch(); } catch { }
             Close();
         };
-        var close = MakeButton("Close", "CloseButton");
-        close.Click += (_, _) => Close();
 
-        Show(Page(header, text, close, start), HeightSmall);
+        Show(Page(head, body, close, start), HeightSmall);
         if (_auto) _ = AutoDoneAsync();
     }
 
     private void ShowError(string message, bool fatal = false)
     {
-        var header = Header("ASD was not installed", "Nothing was changed");
+        var title = _mode switch
+        {
+            Mode.Uninstall => "ASD was not removed",
+            Mode.Update => "ASD was not updated",
+            Mode.Repair => "ASD was not repaired",
+            _ => "ASD was not installed",
+        };
+        var header = Header(title, "Nothing was changed", Nav(1, Verb(_mode)));
         var text = new TextBlock { Text = message, FontSize = 14, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
 
         var close = MakeButton("Close", "CloseButton");
@@ -561,7 +744,7 @@ public sealed class SetupWindow : Window
         else
         {
             var retry = MakeButton("Try again", "RetryButton", accent: true);
-            retry.Click += async (_, _) => await RunInstallAsync();
+            retry.Click += async (_, _) => await RunAsync(_mode);
             buttons = new[] { close, retry };
         }
         Show(Page(header, new ScrollViewer { Content = text, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }, buttons), HeightError);

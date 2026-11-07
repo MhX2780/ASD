@@ -12,6 +12,7 @@ namespace ASD;
 public sealed partial class MainWindow : Window
 {
     private ToolInfo? _current;
+    private int _depth = -1;   // where the shown page is in "Toolbox > Web > HTTP Track": -1 outside the Toolbox, 0 Toolbox, 1 a category, 2 a tool
     private Stack<string> _history = new();
     private Dictionary<string, ToolInfo> _suggest = new();
     private string _lastClip = "";
@@ -25,6 +26,7 @@ public sealed partial class MainWindow : Window
         WindowChrome.ApplyTaskbarIcon(AppWindow);   // app.ico on the taskbar button
         this.ExtendsContentIntoTitleBar = true;   // our own TitleBar replaces the default one
         this.SetTitleBar(AppTitleBar);
+        WindowChrome.SetTitleIcon(AppTitleBar);   // the ASD icon to the left of the title
 
         // Tall title bar (48 px): makes the system minimize / maximize / close buttons
         // as tall as our toolbar instead of the default 32 px.
@@ -130,7 +132,32 @@ public sealed partial class MainWindow : Window
     /// <summary>Shows a tool. Tools listed under "More" keep the "More" item highlighted.</summary>
     public void OpenTool(string tag, string? parameter = null) => Navigate(tag, parameter, record: true);
 
+    /// <summary>Keys Store and Automation take a moment to build: a loading ring is drawn first, then the page is built.</summary>
     private void Navigate(string tag, string? parameter, bool record)
+    {
+        var tool = ToolRegistry.Find(tag) ?? ToolRegistry.Find("encode")!;
+        bool slow = tool.Tag is "keys" or "automation" && !(_current?.Tag == tool.Tag && ContentHost.Content != null);
+        if (!slow) { NavigateNow(tag, parameter, record); return; }
+
+        SelectNavItem(tool.NavTag);
+        LoadingText.Text = "Opening " + tool.Title + "…";
+        LoadingOverlay.Visibility = Visibility.Visible;
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>   // after the ring was drawn
+        {
+            try { NavigateNow(tag, parameter, record); }
+            finally
+            {
+                DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => LoadingOverlay.Visibility = Visibility.Collapsed);
+            }
+        });
+    }
+
+    private static int ToolboxDepth(ToolInfo tool, string? parameter)
+        => tool.Group == "more" ? 2
+         : tool.Tag == "more" ? (parameter is { Length: > 4 } p && p.StartsWith("cat:", StringComparison.Ordinal) ? 1 : 0)
+         : -1;
+
+    private void NavigateNow(string tag, string? parameter, bool record)
     {
         var tool = ToolRegistry.Find(tag) ?? ToolRegistry.Find("encode")!;
         SelectNavItem(tool.NavTag);
@@ -161,10 +188,16 @@ public sealed partial class MainWindow : Window
         }
         AppTitleBar.IsBackButtonVisible = _history.Count > 0;
 
-        // Opening a tool from the Toolbox: slides in from the left.
-        // Leaving a tool (back button, Toolbox, Home ...): the new page slides in from the right = "going back".
-        if (tool.Group == "more") PlayPageEntrance(page, -48);
-        else if (previous?.Group == "more") PlayPageEntrance(page, 48);
+        // The slide follows the arrows of "Toolbox > Web > HTTP Track": one step deeper comes in from the right (the way the arrows point),
+        // one step back up (Toolbox, Home ...) comes in from the left.
+        var depth = ToolboxDepth(tool, parameter);
+        var before = _depth;
+        _depth = depth;
+        if (depth >= 0 || before >= 0)
+        {
+            if (depth > before) PlayPageEntrance(page, 48);
+            else if (depth < before) PlayPageEntrance(page, -48);
+        }
     }
 
     /// <summary>Entrance animation: the page slides in horizontally and fades in (about 0.3 s). fromX &lt; 0 = from the left, &gt; 0 = from the right. Purely cosmetic.</summary>
@@ -208,12 +241,52 @@ public sealed partial class MainWindow : Window
     // ───────── title bar: back, pane toggle, search ─────────
     private void TitleBar_BackRequested(TitleBar sender, object args)
     {
+        Pulse("BackButton");
         if (_history.Count > 0) Navigate(_history.Pop(), null, record: false);
         AppTitleBar.IsBackButtonVisible = _history.Count > 0;
     }
 
     private void TitleBar_PaneToggleRequested(TitleBar sender, object args)
-        => RootNav.IsPaneOpen = !RootNav.IsPaneOpen;
+    {
+        Pulse("PaneToggleButton");
+        RootNav.IsPaneOpen = !RootNav.IsPaneOpen;
+    }
+
+    /// <summary>A short "press" animation on a title-bar button (the menu button and the back arrow pop), so every click shows something.</summary>
+    private void Pulse(string buttonName)
+    {
+        try
+        {
+            if (FindNamed(AppTitleBar, buttonName) is not FrameworkElement button) return;
+            var scale = new Microsoft.UI.Xaml.Media.ScaleTransform { ScaleX = 1, ScaleY = 1, CenterX = button.ActualWidth / 2, CenterY = button.ActualHeight / 2 };
+            button.RenderTransform = scale;
+            var ease = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.7 };
+            var storyboard = new Storyboard();
+            foreach (var property in new[] { "ScaleX", "ScaleY" })
+            {
+                var animation = new DoubleAnimation { From = 0.7, To = 1, Duration = new Duration(TimeSpan.FromMilliseconds(320)), EasingFunction = ease };
+                Storyboard.SetTarget(animation, scale);
+                Storyboard.SetTargetProperty(animation, property);
+                storyboard.Children.Add(animation);
+            }
+            storyboard.Completed += (_, _) => { storyboard.Stop(); button.RenderTransform = null; };
+            storyboard.Begin();
+        }
+        catch { /* cosmetic only */ }
+    }
+
+    private static FrameworkElement? FindNamed(DependencyObject root, string name)
+    {
+        int count = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < count; i++)
+        {
+            var child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(root, i);
+            if (child is FrameworkElement fe && fe.Name == name) return fe;
+            var deeper = FindNamed(child, name);
+            if (deeper != null) return deeper;
+        }
+        return null;
+    }
 
     private void FocusSearch()
     {

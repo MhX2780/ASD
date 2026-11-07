@@ -107,6 +107,7 @@ internal sealed class ExtensionWindow : Window
             var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
             ExtendsContentIntoTitleBar = true;
             SetTitleBar(titleBar);
+            WindowChrome.SetTitleIcon(titleBar);   // the ASD icon to the left of the title
             try { if (AppWindowTitleBar.IsCustomizationSupported()) AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall; } catch { }
             _root.ActualThemeChanged += (_, _) => WindowChrome.ApplyCaptionColors(AppWindow, _root.ActualTheme);
             WindowChrome.ApplyCaptionColors(AppWindow, _root.ActualTheme);
@@ -165,7 +166,7 @@ internal sealed class ExtensionWindow : Window
         {
             CornerRadius = new CornerRadius(4), Padding = new Thickness(6, 1, 6, 2), VerticalAlignment = VerticalAlignment.Center,
             Background = accent ? AccentBrush() : new SolidColorBrush(Windows.UI.Color.FromArgb(40, 128, 128, 128)),
-            Child = new TextBlock { Text = text, FontSize = 11, Foreground = accent ? new SolidColorBrush(Colors.White) : null },
+            Child = new TextBlock { Text = text, FontSize = 11, Foreground = accent ? new SolidColorBrush(Colors.White) : new SolidColorBrush(_root.ActualTheme == ElementTheme.Light ? Colors.Black : Colors.White) },
         };
 
     /// <summary>The extension's picture: its icon.png, else its Simple Icons logo, else its glyph.</summary>
@@ -222,6 +223,7 @@ internal sealed class ExtensionWindow : Window
     private void ShowStatus(Visual visual, string title, string detail, bool bar = false, bool indeterminate = false, bool retry = false, bool close = false, bool toList = false, bool restart = false)
     {
         _restart.Visibility = restart ? Visibility.Visible : Visibility.Collapsed;
+        _close.Content = restart ? "Restart later" : "Close";
         _ring.IsActive = visual == Visual.Ring;
         _ring.Visibility = visual == Visual.Ring ? Visibility.Visible : Visibility.Collapsed;
         _icon.Visibility = visual == Visual.Ring ? Visibility.Collapsed : Visibility.Visible;

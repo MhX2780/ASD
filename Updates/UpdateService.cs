@@ -143,7 +143,7 @@ internal static class UpdateService
         Directory.CreateDirectory(WorkDir);
         TryDeleteDirectory(StagingDir);
         TryDeleteFile(ZipPath);
-        TryDeleteFile(ZipPath + ".part");
+        // (a .part file from an interrupted download is kept: the download continues from it)
 
         await DownloadAsync(RemoteZipUrl, ZipPath, progress, ct);
         await Task.Run(() => Extract(progress, ct), ct);
@@ -201,7 +201,7 @@ internal static class UpdateService
     {
         Directory.CreateDirectory(WorkDir);
         TryDeleteFile(MsixPath);
-        TryDeleteFile(MsixPath + ".part");
+        // (a .part file from an interrupted download is kept: the download continues from it)
 
         await DownloadAsync(MsixUrl, MsixPath, progress, ct);
 
@@ -369,16 +369,26 @@ internal static class UpdateService
             using var headerTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             headerTimeout.CancelAfter(ConnectTimeout);
 
-            using var response = await Http.SendAsync(new HttpRequestMessage(HttpMethod.Get, url),
-                HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token);
+            long existing = File.Exists(part) ? new FileInfo(part).Length : 0;   // an interrupted download continues from here
+            var request = new HttpRequestMessage(HttpMethod.Get, url);
+            if (existing > 0) request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(existing, null);
+            using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token);
+            if (existing > 0 && response.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable)
+            {
+                TryDeleteFile(part);   // the saved part does not fit: start again
+                await DownloadAsync(url, targetPath, progress, ct);
+                return;
+            }
             EnsureReleaseFile(response);
+            bool resumed = existing > 0 && response.StatusCode == System.Net.HttpStatusCode.PartialContent;
+            if (!resumed) existing = 0;
 
-            long total = response.Content.Headers.ContentLength ?? -1;
+            long total = response.Content.Headers.ContentLength is long length ? length + existing : -1;
             await using var source = await response.Content.ReadAsStreamAsync(ct);
-            await using (var target = new FileStream(part, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true))
+            await using (var target = new FileStream(part, resumed ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true))
             {
                 var buffer = new byte[81920];
-                long received = 0;
+                long received = existing;
                 var clock = Stopwatch.StartNew();
                 long lastReportMs = -1000;
 
@@ -396,7 +406,7 @@ internal static class UpdateService
                     if (clock.ElapsedMilliseconds - lastReportMs >= 100)
                     {
                         lastReportMs = clock.ElapsedMilliseconds;
-                        var speed = received / Math.Max(clock.Elapsed.TotalSeconds, 0.001);
+                        var speed = (received - existing) / Math.Max(clock.Elapsed.TotalSeconds, 0.001);
                         progress.Report(new UpdateProgress("download",
                             total > 0 ? received * 100.0 / total : 0, total <= 0, received, total, speed));
                     }
@@ -406,20 +416,19 @@ internal static class UpdateService
                     throw new IOException($"The download was incomplete ({received:N0} of {total:N0} bytes).");
 
                 progress.Report(new UpdateProgress("download", 100, false, received, Math.Max(total, received),
-                    received / Math.Max(clock.Elapsed.TotalSeconds, 0.001)));
+                    (received - existing) / Math.Max(clock.Elapsed.TotalSeconds, 0.001)));
             }
 
             File.Move(part, targetPath, overwrite: true);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            TryDeleteFile(part);
-            throw new TimeoutException("The download stalled. Check your internet connection and try again.");
+            // the .part file stays: the next try continues from it
+            throw new TimeoutException("The download stalled. Check your internet connection and try again: it continues from where it stopped.");
         }
         catch
         {
-            TryDeleteFile(part);
-            throw;
+            throw;   // the .part file stays: the next try continues from it
         }
     }
 

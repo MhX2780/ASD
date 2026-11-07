@@ -589,16 +589,21 @@ public sealed class AutomationPage : ToolPage
         if (res.TryGetValue("AccentSplitButtonStyle", out var st) && st is Style style) button.Style = style;
 
         object? Res(string key) => res.TryGetValue(key, out var v) ? v : null;
-        var normal = Res("AccentFillColorDefaultBrush");
-        var hover = Res("AccentFillColorSecondaryBrush") ?? normal;
-        var pressed = Res("AccentFillColorTertiaryBrush") ?? normal;
-        var disabled = Res("AccentFillColorDisabledBrush") ?? normal;
-        var text = Res("TextOnAccentFillColorPrimaryBrush");
-        var textDisabled = Res("TextOnAccentFillColorDisabledBrush") ?? text;
-        var none = Res("ControlFillColorTransparentBrush");
+        // the colors come from the user's accent color, not from the theme resources of the app: those follow Windows' own
+        // light/dark setting, so with the app in the other theme the arrow ended up dark on dark (or light on light)
+        var ui = new Windows.UI.ViewManagement.UISettings();
+        var baseColor = ui.GetColorValue(Windows.UI.ViewManagement.UIColorType.Accent);
+        var luminance = (0.299 * baseColor.R + 0.587 * baseColor.G + 0.114 * baseColor.B) / 255.0;
+        var ink = luminance > 0.62 ? Microsoft.UI.Colors.Black : Microsoft.UI.Colors.White;   // readable on the accent color
+        object normal = new SolidColorBrush(baseColor);
+        object hover = new SolidColorBrush(ui.GetColorValue(Windows.UI.ViewManagement.UIColorType.AccentDark1));
+        object pressed = new SolidColorBrush(ui.GetColorValue(Windows.UI.ViewManagement.UIColorType.AccentDark2));
+        object disabled = new SolidColorBrush(Windows.UI.Color.FromArgb(90, baseColor.R, baseColor.G, baseColor.B));
+        object text = new SolidColorBrush(ink);
+        object textDisabled = new SolidColorBrush(Windows.UI.Color.FromArgb(160, ink.R, ink.G, ink.B));
 
         void Set(string key, object? value) { if (value != null) button.Resources[key] = value; }
-        foreach (var part in new[] { "SplitButton", "SplitButtonPrimary", "SplitButtonSecondary" })
+        foreach (var part in new[] { "SplitButton", "SplitButtonPrimary", "SplitButtonSecondary", "AccentSplitButton", "AccentSplitButtonPrimary", "AccentSplitButtonSecondary" })
         {
             Set(part + "Background", normal);
             Set(part + "BackgroundPointerOver", hover);
@@ -613,9 +618,32 @@ public sealed class AutomationPage : ToolPage
             Set(part + "BorderBrushPressed", pressed);
             Set(part + "BorderBrushDisabled", disabled);
         }
-        Set("SplitButtonDividerBrush", Res("TextOnAccentFillColorPrimaryBrush"));
+        Set("SplitButtonDividerBrush", text);
+        Set("AccentSplitButtonDividerBrush", text);
         if (normal is Brush nb) button.Background = nb;
         if (text is Brush tb) button.Foreground = tb;
+
+        // the arrow (and the label) are painted by hand as well, and again after every hover / press, so no state can leave them dark
+        if (text is SolidColorBrush ink2)
+        {
+            void Paint() { try { PaintInk(button, ink2); } catch { } }
+            button.Loaded += (_, _) => Paint();
+            button.ActualThemeChanged += (_, _) => Paint();
+            foreach (var routed in new[] { UIElement.PointerPressedEvent, UIElement.PointerReleasedEvent, UIElement.PointerEnteredEvent, UIElement.PointerExitedEvent })
+                button.AddHandler(routed, new PointerEventHandler((_, _) => { Paint(); button.DispatcherQueue.TryEnqueue(Paint); }), true);
+        }
+    }
+
+    private static void PaintInk(DependencyObject root, Brush ink)
+    {
+        int count = VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is FontIcon icon) icon.Foreground = ink;
+            else if (child is TextBlock label) label.Foreground = ink;
+            PaintInk(child, ink);
+        }
     }
 
     private void ZoomToFit()

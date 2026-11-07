@@ -112,6 +112,15 @@
             <InfoBar x:Name="ClipBar" Grid.Row="0" IsOpen="False" Severity="Informational" Margin="12,8,12,0"/>
             <ContentControl x:Name="ContentHost" Grid.Row="1"
                             HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" IsTabStop="False"/>
+
+            <!-- shown while Keys Store / Automation are being built (they take a moment) -->
+            <Grid x:Name="LoadingOverlay" Grid.Row="0" Grid.RowSpan="2" Visibility="Collapsed"
+                  Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="14">
+                    <ProgressRing IsActive="True" Width="48" Height="48"/>
+                    <TextBlock x:Name="LoadingText" Text="Opening…" HorizontalAlignment="Center" Opacity="0.8"/>
+                </StackPanel>
+            </Grid>
         </Grid>
     </NavigationView>
 

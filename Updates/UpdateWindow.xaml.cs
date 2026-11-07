@@ -81,6 +81,7 @@ public sealed partial class UpdateWindow : Window
             // Our own transparent title bar (same approach as the main window): Mica covers it too
             ExtendsContentIntoTitleBar = true;
             SetTitleBar(AppTitleBar);
+            WindowChrome.SetTitleIcon(AppTitleBar);   // the ASD icon to the left of the title
             try
             {
                 if (AppWindowTitleBar.IsCustomizationSupported())
@@ -158,7 +159,7 @@ public sealed partial class UpdateWindow : Window
             }
 
             // 3. Download + extract (logo + linear progress bar)
-            Show(Visual.Logo, "Downloading update…", UpdateService.Describe(check.RemoteText), bar: true, barIndeterminate: true);
+            Show(Visual.Logo, "Downloading update…", VersionLine(check.RemoteText), bar: true, barIndeterminate: true);
             await UpdateService.DownloadAndExtractAsync(new Progress<UpdateProgress>(OnProgress), ct);
 
             // 4. Hand over to the .bat installer and close ASD so it can replace the files
@@ -194,7 +195,7 @@ public sealed partial class UpdateWindow : Window
             return;
         }
 
-        Show(Visual.Logo, "Downloading update…", UpdateService.Describe(check.Text), bar: true, barIndeterminate: true);
+        Show(Visual.Logo, "Downloading update…", $"Version: {check.Remote}", bar: true, barIndeterminate: true);
         await UpdateService.DownloadMsixAsync(check, new Progress<UpdateProgress>(OnProgress), ct);
 
         Show(Visual.Logo, "Installing the update…",
@@ -235,11 +236,17 @@ public sealed partial class UpdateWindow : Window
         else
         {
             TitleText.Text = "Downloading update…";
-            StatsText.Text = p.Total > 0
-                ? $"{Mb(p.Received)} / {Mb(p.Total)}  ·  {Mb((long)p.BytesPerSecond)}/s  ·  {p.Percent:0}%"
-                : $"{Mb(p.Received)}  ·  {Mb((long)p.BytesPerSecond)}/s";
+            StatsText.Text = p.Total > 0 ? $"{p.Percent:0}%" : "";
         }
         StatsText.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>Only the version line of the release text ("Version: 1.0.87.0"): commit, hash, date and size are too much for this window.</summary>
+    private static string VersionLine(string? text)
+    {
+        foreach (var raw in (text ?? "").Replace("\r", "").Split('\n'))
+            if (raw.Trim().StartsWith("Version", StringComparison.OrdinalIgnoreCase)) return raw.Trim();
+        return "";
     }
 
     private static string Mb(long bytes) => $"{bytes / 1048576.0:0.0} MB";
@@ -249,6 +256,7 @@ public sealed partial class UpdateWindow : Window
     private void Show(Visual visual, string title, string detail,
         bool bar = false, bool barIndeterminate = false, bool retry = false, bool close = false)
     {
+        if (visual == Visual.Logo) visual = Visual.Ring;   // only a loading ring (no big icon): the window stays quiet
         Ring.IsActive = visual == Visual.Ring;
         Ring.Visibility = visual == Visual.Ring ? Visibility.Visible : Visibility.Collapsed;
 

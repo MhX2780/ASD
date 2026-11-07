@@ -184,6 +184,14 @@ public static class CursorHelper
                 };
                 if (cursor != 0) { SetCursor(cursor); return 1; }
             }
+            if (msg == 0x00A3 && (int)wParam == HTCAPTION)   // WM_NCLBUTTONDBLCLK: a double-click on the title bar maximizes / restores
+            {
+                if ((GetWindowStyle(h, -16) & 0x00010000) != 0)   // only a window that has a maximize box
+                {
+                    ShowWindow(h, IsZoomed(h) ? 9 : 3);           // SW_RESTORE / SW_MAXIMIZE
+                    return 0;
+                }
+            }
             return DefSubclassProc(h, msg, wParam, lParam);
         };
         _subclassProcs.Add(proc);
@@ -259,6 +267,15 @@ public static class CursorHelper
 
     [DllImport("user32")]
     private static extern nint SetCursor(nint hCursor);
+
+    [DllImport("user32")]
+    private static extern bool IsZoomed(nint hWnd);
+
+    [DllImport("user32")]
+    private static extern bool ShowWindow(nint hWnd, int nCmdShow);
+
+    [DllImport("user32", EntryPoint = "GetWindowLongW")]
+    private static extern int GetWindowStyle(nint hWnd, int nIndex);
 
     [DllImport("comctl32", SetLastError = true)]
     private static extern bool SetWindowSubclass(nint hWnd, SubclassProc pfnSubclass, nint uIdSubclass, nint dwRefData);

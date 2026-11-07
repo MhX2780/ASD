@@ -20,6 +20,18 @@ internal static class WindowChrome
         catch { /* cosmetic only */ }
     }
 
+    /// <summary>The ASD icon to the left of a window's title (the title bar's own icon).</summary>
+    public static void SetTitleIcon(Microsoft.UI.Xaml.Controls.TitleBar bar)
+    {
+        try
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "Assets", "SplashIcon.png");
+            if (!File.Exists(path)) return;
+            bar.IconSource = new Microsoft.UI.Xaml.Controls.ImageIconSource { ImageSource = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(path)) };
+        }
+        catch { /* cosmetic only */ }
+    }
+
     /// <summary>Transparent min/max/close buttons whose icons match the light or dark theme (the Mica look).</summary>
     public static void ApplyCaptionColors(AppWindow appWindow, ElementTheme actualTheme)
     {
