@@ -183,7 +183,7 @@ public sealed partial class UpdateWindow : Window
         }
     }
 
-    /// <summary>Installed ASD (MSIX): download ASD.msix, check its hash, hand it to Windows' installer and close.</summary>
+    /// <summary>Installed ASD (MSIX): download ASD.msix, check its hash, install it quietly (a hidden helper), close, and open the new ASD.</summary>
     private async Task RunMsixAsync(CancellationToken ct)
     {
         Show(Visual.Ring, "Checking for updates…", "");
@@ -197,13 +197,20 @@ public sealed partial class UpdateWindow : Window
         Show(Visual.Logo, "Downloading update…", UpdateService.Describe(check.Text), bar: true, barIndeterminate: true);
         await UpdateService.DownloadMsixAsync(check, new Progress<UpdateProgress>(OnProgress), ct);
 
-        Show(Visual.Logo, "Opening the installer…",
-            "Windows asks you to confirm. ASD closes now, and the installer starts it again when it is done.",
+        Show(Visual.Logo, "Installing the update…",
+            "ASD closes now, installs the update quietly and opens again in a few seconds.",
             bar: true, barIndeterminate: true);
         _installing = true;
         await Task.Delay(900, ct);
-        UpdateService.StartMsixInstall();
-        await Task.Delay(1200, ct);   // let the installer window come up before ASD goes away
+        if (UpdateService.StartSilentMsixInstall())
+        {
+            await Task.Delay(600, ct);
+        }
+        else
+        {
+            UpdateService.StartMsixInstall();   // could not be done quietly: Windows' installer window (asks to confirm)
+            await Task.Delay(1200, ct);         // let that window come up before ASD goes away
+        }
         Application.Current.Exit();
     }
 

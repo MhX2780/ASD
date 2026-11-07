@@ -170,7 +170,7 @@ internal static class UpdateService
         try
         {
             using var response = await Http.GetAsync(MsixInfoUrl, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
-            response.EnsureSuccessStatusCode();
+            EnsureReleaseFile(response);
             if (response.Content.Headers.ContentLength > MaxInfoBytes)
                 throw new InvalidDataException("The update information file is unexpectedly large.");
             text = await response.Content.ReadAsStringAsync(timeout.Token);
@@ -181,17 +181,19 @@ internal static class UpdateService
         }
 
         string? versionText = null, hash = null;
+        var shown = new List<string>();   // what the person reads: msix.txt without the long SHA-256 line
         foreach (var raw in Normalize(text).Split('\n'))
         {
             var line = raw.Trim();
-            if (line.StartsWith("Version:", StringComparison.OrdinalIgnoreCase)) versionText = line["Version:".Length..].Trim();
+            if (line.StartsWith("Version:", StringComparison.OrdinalIgnoreCase)) { versionText = line["Version:".Length..].Trim(); shown.Add(raw); }
             else if (line.StartsWith("SHA256:", StringComparison.OrdinalIgnoreCase)) hash = line["SHA256:".Length..].Trim();
+            else shown.Add(raw);
         }
         if (text.Length > MaxInfoBytes || !Version.TryParse(versionText, out var remote) || hash is not { Length: 64 })
             throw new InvalidDataException("The update information on GitHub is not valid.");
 
         var installed = AppIdentity.PackageVersion ?? new Version(0, 0, 0, 0);
-        return new MsixCheck(remote > installed, installed, remote, hash.ToLowerInvariant(), text);
+        return new MsixCheck(remote > installed, installed, remote, hash.ToLowerInvariant(), string.Join("\n", shown));
     }
 
     /// <summary>Downloads ASD.msix and checks it against the hash from msix.txt.</summary>
@@ -215,8 +217,99 @@ internal static class UpdateService
         }
     }
 
+    private const string UpdateTaskName = "ASD-Update";
+    private static string FailedFile => Path.Combine(WorkDir, "update-failed.txt");
+    private static string UpdateLog => Path.Combine(WorkDir, "update-log.txt");
+
+    private static string Ps(string text) => "'" + text.Replace("'", "''") + "'";   // a PowerShell string literal
+
     /// <summary>
-    /// Opens the downloaded package with Windows' own installer ("App Installer"): it shows an Update button, closes ASD
+    /// Installs the downloaded package with no window and no question, then starts ASD again. ASD has to close for this, and
+    /// anything ASD starts itself belongs to ASD's package and is closed with it, so the work is handed to Windows' Task Scheduler:
+    /// a hidden PowerShell (outside the package) waits for ASD to exit, runs Add-AppxPackage, and opens the new ASD.
+    /// If the install fails, the old ASD is opened again and the reason is kept for the next start (TakeFailedUpdateMessage).
+    /// Returns false when the helper could not be set up: the caller then falls back to Windows' installer window.
+    /// The caller exits ASD right after a true.
+    /// </summary>
+    public static bool StartSilentMsixInstall()
+    {
+        try
+        {
+            if (!File.Exists(MsixPath)) return false;
+            Directory.CreateDirectory(WorkDir);
+            TryDeleteFile(FailedFile);
+
+            var script = Path.Combine(WorkDir, "apply-update.ps1");
+            File.WriteAllText(script, $$"""
+                $msix = {{Ps(MsixPath)}}
+                $target = {{Ps(AppIdentity.LaunchTarget)}}
+                $log = {{Ps(UpdateLog)}}
+                $failFile = {{Ps(FailedFile)}}
+                $waitPid = {{Environment.ProcessId}}
+                function Log($m) { Add-Content -LiteralPath $log -Value ('{0:yyyy-MM-dd HH:mm:ss}  {1}' -f (Get-Date), $m) }
+                $failed = $null
+                try {
+                  Log "update started; waiting for ASD (pid $waitPid) to close"
+                  $p = Get-Process -Id $waitPid -ErrorAction SilentlyContinue
+                  if ($p) { $null = $p.WaitForExit(30000) }
+                  Log "installing $msix"
+                  Add-AppxPackage -Path $msix -ForceUpdateFromAnyVersion -ForceApplicationShutdown -ErrorAction Stop
+                  Log 'installed'
+                } catch {
+                  $failed = $_.Exception.Message
+                  Log "FAILED: $failed"
+                }
+                if ($failed) { Set-Content -LiteralPath $failFile -Value $failed }
+                Start-Process explorer.exe $target
+                Log 'ASD started again'
+                schtasks.exe /delete /tn {{UpdateTaskName}} /f | Out-Null
+                """, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));   // with a BOM: Windows PowerShell reads other paths wrongly
+
+            var command = $"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{script}\"";
+            if (command.Length > 250) return false;   // schtasks accepts at most 261 characters
+
+            if (RunHidden("schtasks.exe", $"/create /tn {UpdateTaskName} /tr \"{command.Replace("\"", "\\\"")}\" /sc once /st 23:59 /f") != 0) return false;
+            if (RunHidden("schtasks.exe", $"/run /tn {UpdateTaskName}") != 0) return false;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static int RunHidden(string file, string arguments)
+    {
+        using var process = Process.Start(new ProcessStartInfo(file, arguments)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        }) ?? throw new InvalidOperationException("Could not start " + file);
+        _ = process.StandardOutput.ReadToEndAsync();
+        _ = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(15000)) { try { process.Kill(); } catch { } return -1; }
+        return process.ExitCode;
+    }
+
+    /// <summary>
+    /// If the last silent update could not be installed, the reason (once); the old ASD was opened again.
+    /// </summary>
+    public static string? TakeFailedUpdateMessage()
+    {
+        try
+        {
+            if (!File.Exists(FailedFile)) return null;
+            var text = File.ReadAllText(FailedFile).Trim();
+            TryDeleteFile(FailedFile);
+            return string.IsNullOrEmpty(text) ? "Windows could not install the update." : text;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// The fallback: opens the downloaded package with Windows' own installer ("App Installer"): it shows an Update button, closes ASD
     /// if it is still open, installs the new version in one step and can start it again. The caller exits ASD right after.
     /// </summary>
     public static void StartMsixInstall()
@@ -255,6 +348,17 @@ internal static class UpdateService
         }
     }
 
+    /// <summary>
+    /// 404 = the release "latest" is being rebuilt right now (each push deletes and recreates it; the files come back a few minutes later).
+    /// That is not an error of ASD or of the person's connection, so it gets its own message.
+    /// </summary>
+    private static void EnsureReleaseFile(HttpResponseMessage response)
+    {
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            throw new InvalidOperationException("A new version is being published on GitHub right now. This takes a few minutes: please try again shortly.");
+        response.EnsureSuccessStatusCode();
+    }
+
     private static async Task DownloadAsync(string url, string targetPath, IProgress<UpdateProgress> progress, CancellationToken ct)
     {
         var part = targetPath + ".part";
@@ -267,7 +371,7 @@ internal static class UpdateService
 
             using var response = await Http.SendAsync(new HttpRequestMessage(HttpMethod.Get, url),
                 HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token);
-            response.EnsureSuccessStatusCode();
+            EnsureReleaseFile(response);
 
             long total = response.Content.Headers.ContentLength ?? -1;
             await using var source = await response.Content.ReadAsStreamAsync(ct);

@@ -8,8 +8,11 @@
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
   xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
-  IgnorableNamespaces="uap rescap desktop6">
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  IgnorableNamespaces="uap uap5 rescap desktop desktop6 com">
 
   <Identity Name="AdvaASD.ASD" Publisher="CN=Adva ASD" Version="1.0.0.0" />
 
@@ -40,6 +43,42 @@
         Square44x44Logo="Assets\Package\Square44x44Logo.png">
         <uap:DefaultTile Wide310x150Logo="Assets\Package\Wide310x150Logo.png" />
       </uap:VisualElements>
+
+      <!-- Windows notifications (toasts): a packaged app must declare how a click on a toast reaches it.
+           Without this Windows App SDK's AppNotificationManager.Register() fails and no toast is shown. -->
+      <Extensions>
+        <!-- .automation files: ASD is offered in "Open with" (Windows registers this for the person when the package is installed,
+             and removes it when ASD is uninstalled; no registry editing by ASD-Setup is needed) -->
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="asdautomation">
+            <uap:DisplayName>ASD Automation</uap:DisplayName>
+            <uap:Logo>Assets\Package\Square44x44Logo.png</uap:Logo>
+            <uap:InfoTip>Cards joined by arrows that run commands, web requests and notifications</uap:InfoTip>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.automation</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+
+        <!-- the command "asd" (and asd.exe in %LocalAppData%\Microsoft\WindowsApps): the way a plain program, such as the
+             file association ASD-Setup writes, can start the installed ASD with a file -->
+        <uap5:Extension Category="windows.appExecutionAlias" Executable="ASD.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap5:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="asd.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+
+        <desktop:Extension Category="windows.toastNotificationActivation">
+          <desktop:ToastNotificationActivation ToastActivatorCLSID="C5BBC966-07E8-485B-A016-65207E4B8477" />
+        </desktop:Extension>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:ExeServer Executable="ASD.exe" Arguments="----AppNotificationActivated:" DisplayName="ASD">
+              <com:Class Id="C5BBC966-07E8-485B-A016-65207E4B8477" DisplayName="ASD" />
+            </com:ExeServer>
+          </com:ComServer>
+        </com:Extension>
+      </Extensions>
     </Application>
   </Applications>
 

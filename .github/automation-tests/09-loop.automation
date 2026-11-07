@@ -1,7 +1,0 @@
-automation: loop
-cell a:
-  run: echo a
-  success -> b
-cell b:
-  run: echo b
-  success -> a

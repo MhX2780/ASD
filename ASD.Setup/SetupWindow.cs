@@ -2,87 +2,173 @@ using System.Runtime.InteropServices;
 using Microsoft.UI.Text;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.ApplicationModel;
 using Windows.Graphics;
 using WinRT.Interop;
 
 namespace ASD.Setup;
 
 /// <summary>
-/// The whole installer: one window with four views (welcome + license, progress, done, error).
-/// Built in code, like the other windows in ASD.
+/// The whole installer: one window with a few views (welcome, progress, done, error), built in code like the other
+/// windows in ASD. The title bar is ASD's own: a transparent TitleBar over Mica, tall, with theme-matched caption buttons.
 /// </summary>
 public sealed class SetupWindow : Window
 {
     [DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(IntPtr hwnd);
 
+    // window sizes in DIPs (outer size, title bar included): short, because each view only has a little to show
+    private const int WindowWidth = 520;
+    private const int HeightFirstInstall = 440;   // welcome page with the license
+    private const int HeightSmall = 300;
+    private const int HeightError = 400;
+
     private readonly CancellationTokenSource _cancel = new();
-    private readonly Grid _frame = new() { Padding = new Thickness(36, 28, 36, 28) };
+    private readonly Grid _root = new() { Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) };
+    private readonly Grid _frame = new() { Margin = new Thickness(36, 0, 36, 24) };
     private readonly string _license = Installer.ReadText("LICENSE");
     private readonly byte[]? _certificate = Installer.ReadCertificate();
+    private readonly bool _auto;   // --auto: the window does by itself what a person would click (for watching a test)
 
     // welcome view
     private TextBlock _status = new();
     private Button _install = new();
-    private CheckBox _accept = new();
+    private CheckBox? _accept;          // only on a first install
 
     // progress view
-    private readonly TextBlock[] _stepMarks = new TextBlock[4];
-    private readonly TextBlock[] _stepTexts = new TextBlock[4];
+    private readonly TextBlock[] _stepMarks = new TextBlock[2];
+    private readonly TextBlock[] _stepTexts = new TextBlock[2];
     private ProgressBar _bar = new();
     private TextBlock _detail = new();
 
     private bool _working;
+    private bool _ready;
+    private bool _placed;
     private string? _local;   // ASD.msix next to this installer
 
     private static readonly string[] StepNames =
     {
-        "Checking Windows",
-        "Getting ASD",
-        "Trusting the publisher (asks for permission once)",
+        "Getting ready to install",
         "Installing ASD",
     };
 
-    public SetupWindow()
+    public SetupWindow(bool auto = false)
     {
+        _auto = auto;
         Title = "ASD Setup";
         try { SystemBackdrop = new MicaBackdrop(); } catch { /* an older Windows: plain background */ }
-        Content = _frame;
+
+        var titleBar = new TitleBar
+        {
+            Title = "ASD Setup",
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)),
+            IsBackButtonVisible = false,
+            IsPaneToggleButtonVisible = false,
+        };
+        _root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        Grid.SetRow(titleBar, 0);
+        Grid.SetRow(_frame, 1);
+        _root.Children.Add(titleBar);
+        _root.Children.Add(_frame);
+        Content = _root;
+
+        SetupFrame(titleBar);
         Closed += (_, _) => _cancel.Cancel();
 
-        PlaceWindow();
-        ShowWelcome();
+        ShowLoading();
+        _ = PrepareAsync();
     }
 
-    // ───────── window ─────────
+    // ───────── window frame (same approach as ASD's own windows) ─────────
 
-    private void PlaceWindow()
+    private void SetupFrame(TitleBar titleBar)
     {
         try
         {
+            ExtendsContentIntoTitleBar = true;   // our own TitleBar replaces the default one
+            SetTitleBar(titleBar);
+            if (AppWindowTitleBar.IsCustomizationSupported())
+                AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
+        }
+        catch { /* cosmetic only */ }
+
+        try
+        {
             var icon = Path.Combine(AppContext.BaseDirectory, "app.ico");
-            if (File.Exists(icon)) AppWindow.SetIcon(icon);
+            if (File.Exists(icon))
+            {
+                AppWindow.SetIcon(icon);
+                AppWindow.SetTaskbarIcon(icon);
+            }
         }
         catch { }
 
         try
         {
-            var hwnd = WindowNative.GetWindowHandle(this);
-            var scale = Math.Max(1.0, GetDpiForWindow(hwnd) / 96.0);
-            int w = (int)(640 * scale), h = (int)(720 * scale);
-            AppWindow.Resize(new SizeInt32(w, h));
-
-            var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
-            AppWindow.Move(new PointInt32(area.X + (area.Width - w) / 2, area.Y + (area.Height - h) / 2));
-
             if (AppWindow.Presenter is OverlappedPresenter presenter)
             {
                 presenter.IsResizable = false;
                 presenter.IsMaximizable = false;
             }
+        }
+        catch { }
+
+        _root.ActualThemeChanged += (_, _) => ApplyCaptionColors();
+        ApplyCaptionColors();
+    }
+
+    /// <summary>Transparent min/close buttons whose icons match the light or dark theme (the Mica look).</summary>
+    private void ApplyCaptionColors()
+    {
+        try
+        {
+            if (!AppWindowTitleBar.IsCustomizationSupported()) return;
+            var light = _root.ActualTheme == ElementTheme.Light;
+            var fg = light ? Windows.UI.Color.FromArgb(255, 0, 0, 0) : Windows.UI.Color.FromArgb(255, 255, 255, 255);
+            var hover = light ? Windows.UI.Color.FromArgb(25, 0, 0, 0) : Windows.UI.Color.FromArgb(25, 255, 255, 255);
+            var none = Windows.UI.Color.FromArgb(0, 0, 0, 0);
+            var tb = AppWindow.TitleBar;
+            tb.ButtonBackgroundColor = none;
+            tb.ButtonInactiveBackgroundColor = none;
+            tb.ButtonForegroundColor = fg;
+            tb.ButtonHoverForegroundColor = fg;
+            tb.ButtonHoverBackgroundColor = hover;
+            tb.ButtonInactiveForegroundColor = Windows.UI.Color.FromArgb(255, 128, 128, 128);
+        }
+        catch { /* cosmetic only */ }
+    }
+
+    /// <summary>Sets the window to the given height (in DIPs). The first time it is centered on the screen; later it keeps its center.</summary>
+    private void SizeWindow(int heightDip)
+    {
+        try
+        {
+            var hwnd = WindowNative.GetWindowHandle(this);
+            var scale = Math.Max(1.0, GetDpiForWindow(hwnd) / 96.0);
+            int w = (int)(WindowWidth * scale), h = (int)(heightDip * scale);
+
+            int cx, cy;
+            if (_placed)
+            {
+                var pos = AppWindow.Position;
+                var size = AppWindow.Size;
+                cx = pos.X + size.Width / 2;
+                cy = pos.Y + size.Height / 2;
+            }
+            else
+            {
+                var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
+                cx = area.X + area.Width / 2;
+                cy = area.Y + area.Height / 2;
+                _placed = true;
+            }
+            AppWindow.Resize(new SizeInt32(w, h));
+            AppWindow.Move(new PointInt32(cx - w / 2, cy - h / 2));
         }
         catch { }
     }
@@ -99,17 +185,38 @@ public sealed class SetupWindow : Window
             TextWrapping = TextWrapping.Wrap,
         };
 
-    private static StackPanel Stack(double spacing)
-        => new() { Spacing = spacing, MaxWidth = 560, HorizontalAlignment = HorizontalAlignment.Center };
+    /// <summary>A column in the middle of the window (horizontally and vertically), 460 wide.</summary>
+    private static StackPanel Column(double spacing)
+        => new()
+        {
+            Spacing = spacing,
+            Width = 460,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
 
-    private static Button MakeButton(string label, bool accent = false)
+    private static Button MakeButton(string label, string id, bool accent = false)
     {
-        var button = new Button { Content = label, MinWidth = 120, Padding = new Thickness(18, 8, 18, 8) };
+        var button = new Button { Content = label, MinWidth = 110, Padding = new Thickness(18, 7, 18, 7) };
+        AutomationProperties.SetAutomationId(button, id);   // so a test can find the button by name, not by position
         if (accent)
         {
             try { button.Style = (Style)Application.Current.Resources["AccentButtonStyle"]; } catch { }
         }
         return button;
+    }
+
+    private static StackPanel ButtonRow(params Button[] buttons)
+    {
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 10,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 12, 0, 0),
+        };
+        foreach (var b in buttons) row.Children.Add(b);
+        return row;
     }
 
     private static FrameworkElement Header(string title, string subtitle)
@@ -119,13 +226,13 @@ public sealed class SetupWindow : Window
         {
             var path = Path.Combine(AppContext.BaseDirectory, "app.ico");
             logo = File.Exists(path)
-                ? new Image { Source = new BitmapImage(new Uri(path)), Width = 56, Height = 56 }
-                : new FontIcon { Glyph = "", FontSize = 40 };
+                ? new Image { Source = new BitmapImage(new Uri(path)), Width = 52, Height = 52 }
+                : new FontIcon { Glyph = "", FontSize = 36 };
         }
-        catch { logo = new FontIcon { Glyph = "", FontSize = 40 }; }
+        catch { logo = new FontIcon { Glyph = "", FontSize = 36 }; }
 
         var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 2 };
-        texts.Children.Add(Text(title, 26, bold: true));
+        texts.Children.Add(Text(title, 24, bold: true));
         texts.Children.Add(Text(subtitle, 13, dim: true));
 
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16 };
@@ -134,82 +241,35 @@ public sealed class SetupWindow : Window
         return row;
     }
 
-    private void Show(FrameworkElement view)
+    private void Show(FrameworkElement view, int heightDip)
     {
         _frame.Children.Clear();
         _frame.Children.Add(view);
+        SizeWindow(heightDip);
     }
 
-    // ───────── 1. welcome and license ─────────
+    // ───────── 0. looking at what is installed ─────────
 
-    private void ShowWelcome()
+    private void ShowLoading()
     {
-        var panel = Stack(14);
-        panel.Children.Add(Header("ASD Setup", "Installs ASD on this PC"));
-
-        _status = Text("Looking at what is installed…", 13, dim: true);
-        panel.Children.Add(_status);
-
-        panel.Children.Add(Text("License", 14, bold: true));
-        var licenseBox = new Border
-        {
-            CornerRadius = new CornerRadius(8),
-            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(28, 128, 128, 128)),
-            Child = new ScrollViewer
-            {
-                Height = 230,
-                Padding = new Thickness(14, 10, 14, 10),
-                Content = new TextBlock
-                {
-                    Text = string.IsNullOrWhiteSpace(_license) ? "No license text is included." : _license,
-                    FontSize = 12,
-                    TextWrapping = TextWrapping.Wrap,
-                    IsTextSelectionEnabled = true,
-                },
-            },
-        };
-        panel.Children.Add(licenseBox);
-
-        _accept = new CheckBox { Content = "I accept the license" };
-        panel.Children.Add(_accept);
-
-        panel.Children.Add(Text(
-            "ASD is installed for your account. Windows asks for administrator permission once, only to trust ASD's own certificate. " +
-            "Later updates are installed from inside ASD.", 12, dim: true));
-
-        _install = MakeButton("Install", accent: true);
-        _install.IsEnabled = false;
-        _install.Click += async (_, _) => await RunInstallAsync();
-        _accept.Checked += (_, _) => UpdateInstallEnabled();
-        _accept.Unchecked += (_, _) => UpdateInstallEnabled();
-
-        var close = MakeButton("Close");
-        close.Click += (_, _) => Close();
-
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, HorizontalAlignment = HorizontalAlignment.Right };
-        buttons.Children.Add(close);
-        buttons.Children.Add(_install);
-        panel.Children.Add(buttons);
-
-        Show(panel);
-        _ = PrepareAsync();
+        var panel = Column(14);
+        panel.Children.Add(new ProgressRing { IsActive = true, Width = 40, Height = 40, HorizontalAlignment = HorizontalAlignment.Center });
+        Show(panel, HeightSmall);
     }
 
-    private bool _ready;
-
-    private void UpdateInstallEnabled() => _install.IsEnabled = _ready && _accept.IsChecked == true && !_working;
-
-    /// <summary>Finds out what is installed, whether an offline package is here, and what GitHub has.</summary>
+    /// <summary>Finds out what is installed, whether an offline package is here, and what GitHub has; then shows the welcome page.</summary>
     private async Task PrepareAsync()
     {
         if (_certificate == null)
         {
-            _status.Text = "This installer was built without ASD's certificate, so it cannot install ASD. Download the Setup from the ASD release page.";
+            ShowError("This installer was built without ASD's certificate, so it cannot install ASD. Download the Setup from the ASD release page.", fatal: true);
+            Installer.Log("FAILED: no certificate inside this installer");
             return;
         }
 
         var installed = await Task.Run(Installer.FindInstalled);
         _local = Installer.LocalPackage();
+        ShowWelcome(installed);
 
         string line;
         Version? latest = null;
@@ -226,26 +286,118 @@ public sealed class SetupWindow : Window
         if (installed != null)
         {
             var have = Installer.VersionOf(installed);
-            line = (latest != null && have >= latest)
+            bool upToDate = latest != null && have >= latest;
+            line = upToDate
                 ? $"ASD {have} is installed and up to date. Install again to repair it."
                 : $"ASD {have} is installed. This will update it.";
             if (latest != null && have < latest) line += $" (Latest: {latest})";
-            _install.Content = latest != null && have >= latest ? "Repair" : "Update";
+            _install.Content = upToDate ? "Repair" : "Update";
         }
 
         _status.Text = line;
         _ready = true;
         UpdateInstallEnabled();
+        if (_auto) _ = AutoStartAsync();
+    }
+
+    // ───────── 1. welcome (the license only on a first install) ─────────
+
+    private void ShowWelcome(Package? installed)
+    {
+        bool firstInstall = installed == null;
+
+        var panel = Column(14);
+        panel.Children.Add(Header("ASD Setup", firstInstall ? "Installs ASD on this PC" : "ASD is already installed"));
+
+        _status = Text("Looking up the latest version…", 13, dim: true);
+        panel.Children.Add(_status);
+
+        if (firstInstall)
+        {
+            panel.Children.Add(new Border
+            {
+                CornerRadius = new CornerRadius(8),
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(28, 128, 128, 128)),
+                Child = new ScrollViewer
+                {
+                    Height = 120,
+                    Padding = new Thickness(14, 10, 14, 10),
+                    Content = new TextBlock
+                    {
+                        Text = string.IsNullOrWhiteSpace(_license) ? "No license text is included." : _license,
+                        FontSize = 12,
+                        TextWrapping = TextWrapping.Wrap,
+                        IsTextSelectionEnabled = true,
+                    },
+                },
+            });
+
+            _accept = new CheckBox { Content = "I accept the license" };
+            AutomationProperties.SetAutomationId(_accept, "AcceptLicense");
+            _accept.Checked += (_, _) => UpdateInstallEnabled();
+            _accept.Unchecked += (_, _) => UpdateInstallEnabled();
+            panel.Children.Add(_accept);
+        }
+        else
+        {
+            _accept = null;   // already accepted when it was first installed
+        }
+
+        _install = MakeButton("Install", "InstallButton", accent: true);
+        _install.IsEnabled = false;
+        _install.Click += async (_, _) => await RunInstallAsync();
+
+        var close = MakeButton("Close", "CloseButton");
+        close.Click += (_, _) => Close();
+
+        panel.Children.Add(ButtonRow(close, _install));
+        Show(panel, firstInstall ? HeightFirstInstall : HeightSmall);
+    }
+
+    private void UpdateInstallEnabled()
+        => _install.IsEnabled = _ready && !_working && (_accept == null || _accept.IsChecked == true);
+
+    // ───────── --auto: do what a person would do, slowly enough to be watched ─────────
+
+    private async Task AutoStartAsync()
+    {
+        Installer.Log("auto mode: the window is shown, the install starts by itself");
+        await Task.Delay(2500);
+        if (_accept != null) _accept.IsChecked = true;        // as if it was ticked
+        await Task.Delay(1500);
+        if (_install.IsEnabled) await RunInstallAsync();
+        else { Installer.Log("FAILED: the Install button stayed disabled"); Finish(1); }
+    }
+
+    private async Task AutoDoneAsync()
+    {
+        await Task.Delay(3000);          // the "ASD is ready" page stays visible for a moment
+        Installer.Log("auto mode: starting ASD");
+        try { Installer.Launch(); } catch (Exception e) { Installer.Log("could not start ASD: " + e.Message); }
+        await Task.Delay(500);
+        Finish(0);
+    }
+
+    private async Task AutoErrorAsync()
+    {
+        await Task.Delay(5000);          // the error page stays visible for a moment
+        Finish(1);
+    }
+
+    private static void Finish(int code)
+    {
+        Installer.Log($"exit code {code}");
+        Environment.Exit(code);
     }
 
     // ───────── 2. progress ─────────
 
     private void ShowProgress()
     {
-        var panel = Stack(18);
+        var panel = Column(18);
         panel.Children.Add(Header("Installing ASD", "Please wait"));
 
-        var steps = new StackPanel { Spacing = 10, Margin = new Thickness(0, 12, 0, 0) };
+        var steps = new StackPanel { Spacing = 10, Margin = new Thickness(0, 8, 0, 0) };
         for (int i = 0; i < StepNames.Length; i++)
         {
             _stepMarks[i] = new TextBlock { Text = "•", Width = 22, FontSize = 16, Opacity = 0.5 };
@@ -257,12 +409,12 @@ public sealed class SetupWindow : Window
         }
         panel.Children.Add(steps);
 
-        _bar = new ProgressBar { IsIndeterminate = true, Margin = new Thickness(0, 16, 0, 0) };
+        _bar = new ProgressBar { IsIndeterminate = true, Margin = new Thickness(0, 8, 0, 0) };
         _detail = Text("", 12, dim: true);
         panel.Children.Add(_bar);
         panel.Children.Add(_detail);
 
-        Show(panel);
+        Show(panel, HeightSmall);
     }
 
     private enum Mark { Running, Done, Failed }
@@ -288,10 +440,17 @@ public sealed class SetupWindow : Window
         _detail.Text = p.Text;
     }
 
+    private void Note(string text)
+    {
+        _bar.IsIndeterminate = true;
+        _detail.Text = text;
+    }
+
     private async Task RunInstallAsync()
     {
         if (_working || _certificate == null) return;
         _working = true;
+        Installer.Log("install started");
         ShowProgress();
         var ct = _cancel.Token;
         int step = 0;
@@ -299,28 +458,29 @@ public sealed class SetupWindow : Window
         {
             var progress = new Progress<(double Fraction, string Text)>(Report);
 
+            // step 1: everything that comes before the install itself (Windows check, the package, the publisher's trust)
             SetStep(0, Mark.Running);
+            Note("Checking Windows…");
             Installer.CheckWindows();
+
+            Note("Getting ASD…");
+            string package = _local ?? await Installer.DownloadAsync(progress, ct);
+            if (_local != null) Note("Using the offline package.");
+
+            Note("Windows may ask for your permission now.");
+            await Installer.TrustAsync(_certificate, ct);
             SetStep(0, Mark.Done);
 
+            // step 2: the install
             step = 1;
             SetStep(1, Mark.Running);
-            string package = _local ?? await Installer.DownloadAsync(progress, ct);
-            if (_local != null) StepNote("Using the offline package.");
+            Note("");
+            await Installer.InstallAsync(package, progress);
+            await Task.Run(Installer.CopyOfflineExtensions);   // an Extensions folder next to this installer, if there is one
+            await Task.Run(Installer.RegisterFileType);        // .automation files open in ASD, with its icon
             SetStep(1, Mark.Done);
 
-            step = 2;
-            SetStep(2, Mark.Running);
-            StepNote("Windows may ask for permission now.");
-            await Installer.TrustAsync(_certificate, ct);
-            SetStep(2, Mark.Done);
-
-            step = 3;
-            SetStep(3, Mark.Running);
-            StepNote("");
-            await Installer.InstallAsync(package, progress);
-            SetStep(3, Mark.Done);
-
+            Installer.Log("install finished");
             ShowDone();
         }
         catch (OperationCanceledException)
@@ -330,6 +490,7 @@ public sealed class SetupWindow : Window
         catch (Exception e)
         {
             SetStep(step, Mark.Failed);
+            Installer.Log($"FAILED at step {step + 1} ({StepNames[step]}): {e.Message}");
             ShowError(e is SetupException ? e.Message : "Something unexpected happened.\n\n" + e.Message);
         }
         finally
@@ -338,52 +499,48 @@ public sealed class SetupWindow : Window
         }
     }
 
-    private void StepNote(string text)
-    {
-        _bar.IsIndeterminate = true;
-        _detail.Text = text;
-    }
-
     // ───────── 3. done / 4. error ─────────
 
     private void ShowDone()
     {
         var installed = Installer.FindInstalled();
-        var panel = Stack(16);
+        var panel = Column(14);
         panel.Children.Add(Header("ASD is ready", installed != null ? $"Version {Installer.VersionOf(installed)}" : "Installed"));
         panel.Children.Add(Text("You can find ASD in the Start menu. It keeps itself up to date: when a new version is out, ASD offers it and Windows installs it in one step.", 14));
 
-        var start = MakeButton("Start ASD", accent: true);
+        var start = MakeButton("Start ASD", "StartButton", accent: true);
         start.Click += (_, _) =>
         {
             try { Installer.Launch(); } catch { }
             Close();
         };
-        var close = MakeButton("Close");
+        var close = MakeButton("Close", "CloseButton");
         close.Click += (_, _) => Close();
 
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 16, 0, 0) };
-        buttons.Children.Add(close);
-        buttons.Children.Add(start);
-        panel.Children.Add(buttons);
-        Show(panel);
+        panel.Children.Add(ButtonRow(close, start));
+        Show(panel, HeightSmall);
+        if (_auto) _ = AutoDoneAsync();
     }
 
-    private void ShowError(string message)
+    private void ShowError(string message, bool fatal = false)
     {
-        var panel = Stack(16);
+        var panel = Column(14);
         panel.Children.Add(Header("ASD was not installed", "Nothing was changed"));
         panel.Children.Add(new TextBlock { Text = message, FontSize = 14, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true });
 
-        var retry = MakeButton("Try again", accent: true);
-        retry.Click += async (_, _) => await RunInstallAsync();
-        var close = MakeButton("Close");
+        var close = MakeButton("Close", "CloseButton");
         close.Click += (_, _) => Close();
-
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 16, 0, 0) };
-        buttons.Children.Add(close);
-        buttons.Children.Add(retry);
-        panel.Children.Add(buttons);
-        Show(panel);
+        if (fatal)
+        {
+            panel.Children.Add(ButtonRow(close));
+        }
+        else
+        {
+            var retry = MakeButton("Try again", "RetryButton", accent: true);
+            retry.Click += async (_, _) => await RunInstallAsync();
+            panel.Children.Add(ButtonRow(close, retry));
+        }
+        Show(panel, HeightError);
+        if (_auto) _ = AutoErrorAsync();
     }
 }

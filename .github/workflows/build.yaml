@@ -4,12 +4,6 @@ on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
-    inputs:
-      scenario:
-        description: 'What the demo video does'
-        type: choice
-        default: notifications
-        options: [notifications, keys, automation, all]
 
 permissions:
   contents: write
@@ -119,87 +113,6 @@ jobs:
           echo "exe_found=false" >> $env:GITHUB_OUTPUT
         }
 
-    - name: Run App and Take First Screenshot
-      id: screenshot
-      if: steps.findexe.outputs.exe_found == 'true' || steps.findexe2.outputs.exe_found == 'true'
-      shell: pwsh
-      run: |-
-        $dir = "${{ steps.findexe.outputs.exe_dir }}"
-        if (-not $dir) { $dir = "${{ steps.findexe2.outputs.exe_dir }}" }
-        $exePath = Join-Path $dir 'ASD.exe'
-        Write-Host "Starting app from: $exePath"
-
-        # تشغيل التطبيق في جلسة سطح المكتب
-        $process = Start-Process -FilePath $exePath -PassThru
-        
-        # الانتظار 5 ثوانٍ لتظهر أول شاشة للتطبيق
-        Start-Sleep -Seconds 5
-
-        # التقاط الشاشة وحفظها كملف PNG
-        Add-Type -AssemblyName System.Drawing
-        Add-Type -AssemblyName System.Windows.Forms
-        $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-        $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-        $graphics.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
-        
-        $screenshotPath = Join-Path $env:RUNNER_TEMP 'app-screenshot.png'
-        $bitmap.Save($screenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
-        
-        # تنظيف وتحرير الذاكرة وإغلاق التطبيق
-        $graphics.Dispose()
-        $bitmap.Dispose()
-        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-
-        Write-Host "Screenshot saved to: $screenshotPath"
-        echo "screenshot_path=$screenshotPath" >> $env:GITHUB_OUTPUT
-
-    - name: Automation self-test (ASD.exe --run / --check, no window)
-      id: autotest
-      if: steps.findexe.outputs.exe_found == 'true' || steps.findexe2.outputs.exe_found == 'true'
-      shell: pwsh
-      continue-on-error: true
-      run: |-
-        $dir = "${{ steps.findexe.outputs.exe_dir }}"
-        if (-not $dir) { $dir = "${{ steps.findexe2.outputs.exe_dir }}" }
-        $exePath = Join-Path $dir 'ASD.exe'
-        $logDir  = Join-Path $env:RUNNER_TEMP 'asd-automation-tests'
-        & "$env:GITHUB_WORKSPACE\.github\scripts\test-automation.ps1" -ExePath $exePath -TestDir "$env:GITHUB_WORKSPACE\.github\automation-tests" -LogDir $logDir
-        $code = $LASTEXITCODE
-        "log_dir=$logDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-        exit $code
-
-    - name: Install ffmpeg (screen recorder)
-      id: ffmpeg
-      if: steps.findexe.outputs.exe_found == 'true' || steps.findexe2.outputs.exe_found == 'true'
-      shell: pwsh
-      continue-on-error: true
-      run: |-
-        if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
-          choco install ffmpeg -y --no-progress
-        }
-        ffmpeg -version | Select-Object -First 1
-
-    - name: Record demo video (MP4) and click through the app
-      id: record
-      if: steps.findexe.outputs.exe_found == 'true' || steps.findexe2.outputs.exe_found == 'true'
-      shell: powershell   # Windows PowerShell 5.1: UI Automation assemblies are guaranteed here
-      continue-on-error: true
-      run: |-
-        $dir = "${{ steps.findexe.outputs.exe_dir }}"
-        if (-not $dir) { $dir = "${{ steps.findexe2.outputs.exe_dir }}" }
-        $exePath = Join-Path $dir 'ASD.exe'
-        $video   = Join-Path $env:RUNNER_TEMP 'ASD-demo.mp4'
-        $log     = Join-Path $env:RUNNER_TEMP 'record-demo-log.txt'
-
-        & "$env:GITHUB_WORKSPACE\.github\scripts\record-demo.ps1" -ExePath $exePath -OutFile $video -LogFile $log -GithubActions -Scenario '${{ inputs.scenario || 'notifications' }}'
-
-        # Windows PowerShell 5.1 ">>" writes UTF-16, which GitHub cannot read, so append as plain UTF-8
-        if (Test-Path $video) {
-          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "video_path=$video`n")
-        }
-        [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "log_path=$log`n")
-
     - name: Create ZIP (ASD.zip) and update.txt (inside the zip AND as a separate release file)
       id: zip
       if: steps.findexe.outputs.exe_found == 'true' || steps.findexe2.outputs.exe_found == 'true'
@@ -241,20 +154,15 @@ jobs:
         echo "zip_size=$size" >> $env:GITHUB_OUTPUT
         echo "update_path=$updatePath" >> $env:GITHUB_OUTPUT
 
-    - name: Upload ASD.zip, Screenshot and demo video as artifacts
+    - name: Upload ASD.zip as an artifact
       if: steps.zip.outcome == 'success'
       uses: actions/upload-artifact@v4
       with:
         name: ASD-Release-Files
         path: |
           ${{ steps.zip.outputs.zip_path }}
-          ${{ steps.screenshot.outputs.screenshot_path }}
-          ${{ steps.record.outputs.video_path }}
-          ${{ steps.record.outputs.log_path }}
-          ${{ runner.temp }}/asd-automation-tests/*.log
-          ${{ runner.temp }}/toast-*.png
 
-    - name: Update single release (tag "latest") with ASD.zip, update.txt, Screenshot and demo video
+    - name: Update single release (tag "latest") with ASD.zip and update.txt
       if: steps.zip.outcome == 'success'
       shell: pwsh
       env:
@@ -263,17 +171,14 @@ jobs:
         $tag = "latest"
         $zipPath = "${{ steps.zip.outputs.zip_path }}"
         $updatePath = "${{ steps.zip.outputs.update_path }}"
-        $screenshotPath = "${{ steps.screenshot.outputs.screenshot_path }}"
-        $videoPath = "${{ steps.record.outputs.video_path }}"
         $subject = (git log -1 --pretty=%s).Trim()
 
         # Keep ONE release/tag: delete the old one, then recreate it
         gh release delete $tag --cleanup-tag --yes 2>$null
         $global:LASTEXITCODE = 0
 
-        # رفع ملف الـ zip، ملف update.txt، صورة التطبيق (png) وفيديو العرض (mp4) معاً خارج الـ zip في الـ Release
-        $assets = @($zipPath, $updatePath, $screenshotPath)
-        if ($videoPath -and (Test-Path $videoPath)) { $assets += $videoPath }   # the demo MP4, if it was recorded
+        # the zip and update.txt go into the release, next to (not inside) the zip
+        $assets = @($zipPath, $updatePath)
         gh release create $tag @assets `
           --target $env:GITHUB_SHA `
           --title "ASD - $subject" `
@@ -382,15 +287,47 @@ jobs:
         }
         $stage = Join-Path $env:RUNNER_TEMP 'release-files'
         New-Item -ItemType Directory -Force -Path $stage | Out-Null
-        Copy-Item $msix.FullName (Join-Path $stage 'ASD.msix') -Force
+        $log = Join-Path $env:RUNNER_TEMP 'msix-build.txt'
 
-        # sign it here, with signtool (the password goes in as one argument, so special characters in it are safe)
         $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
           Where-Object { $_.FullName -like '*\x64\signtool.exe' } | Sort-Object FullName -Descending | Select-Object -First 1
         if (-not $signtool) { throw 'signtool.exe was not found on this runner.' }
+        $makeappx = Join-Path (Split-Path $signtool.FullName) 'makeappx.exe'
         Write-Host "SIGNTOOL: $($signtool.FullName)"
-        & $signtool.FullName sign /fd SHA256 /f $env:PFX /p $env:MSIX_PFX_PASSWORD (Join-Path $stage 'ASD.msix') 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'msix-build.txt') -Append
-        if ($LASTEXITCODE -ne 0) { throw "signtool failed (exit code $LASTEXITCODE): see the log above." }
+        # the password goes in as one argument, so special characters in it are safe
+        function Sign([string]$file) {
+          & $signtool.FullName sign /fd SHA256 /f $env:PFX /p $env:MSIX_PFX_PASSWORD $file 2>&1 | Tee-Object -FilePath $log -Append
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed on $file (exit code $LASTEXITCODE): see the log above." }
+        }
+
+        # 1) sign the programs INSIDE the package (ASD.exe, ASD.dll, ASD.Extensibility.dll), so that their file
+        #    properties show the publisher: unpack, sign, pack again. If packing again fails the unsigned-inside package is used.
+        $package = $msix.FullName
+        $unpacked = Join-Path $env:RUNNER_TEMP 'msix-unpacked'
+        $repacked = Join-Path $env:RUNNER_TEMP 'ASD-repacked.msix'
+        Remove-Item $unpacked, $repacked -Recurse -Force -ErrorAction SilentlyContinue
+        try {
+          & $makeappx unpack /p $msix.FullName /d $unpacked /o 2>&1 | Tee-Object -FilePath $log -Append
+          if ($LASTEXITCODE -ne 0) { throw "makeappx unpack failed (exit code $LASTEXITCODE)" }
+          foreach ($name in 'ASD.exe', 'ASD.dll', 'ASD.Extensibility.dll') {
+            $f = Join-Path $unpacked $name
+            if (Test-Path $f) { Sign $f; Write-Host "signed inside the package: $name" } else { Write-Host "not in the package (skipped): $name" }
+          }
+          # MakeAppx writes these three itself
+          foreach ($reserved in 'AppxBlockMap.xml', '[Content_Types].xml', 'AppxSignature.p7x') {
+            Remove-Item -LiteralPath (Join-Path $unpacked $reserved) -Force -ErrorAction SilentlyContinue
+          }
+          & $makeappx pack /d $unpacked /p $repacked /o 2>&1 | Tee-Object -FilePath $log -Append
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $repacked)) { throw "makeappx pack failed (exit code $LASTEXITCODE)" }
+          $package = $repacked
+          Write-Host 'the package was packed again with the signed programs inside.'
+        } catch {
+          Write-Host "WARNING: the programs inside the package stay unsigned: $($_.Exception.Message)"
+        }
+
+        # 2) sign the package itself
+        Copy-Item $package (Join-Path $stage 'ASD.msix') -Force
+        Sign (Join-Path $stage 'ASD.msix')
         Write-Host 'ASD.msix is signed.'
         Copy-Item (Join-Path $env:RUNNER_TEMP 'ASD.cer') (Join-Path $stage 'ASD.cer') -Force
         $size = [math]::Round(((Get-Item (Join-Path $stage 'ASD.msix')).Length / 1MB), 1)
@@ -413,6 +350,8 @@ jobs:
       id: setup
       shell: pwsh
       continue-on-error: true
+      env:
+        PFX: ${{ steps.cert.outputs.pfx }}
       run: |-
         # the installer carries the PUBLIC certificate inside, so it trusts only our own package
         Copy-Item (Join-Path $env:RUNNER_TEMP 'ASD.cer') 'ASD.Setup/ASD.cer' -Force
@@ -426,7 +365,15 @@ jobs:
           throw 'ASD-Setup.exe was not produced.'
         }
         Copy-Item $exe.FullName (Join-Path $env:RUNNER_TEMP 'release-files/ASD-Setup.exe') -Force
-        Write-Host "ASD-Setup.exe: $([math]::Round($exe.Length / 1MB, 1)) MB"
+
+        # sign the installer too (file properties -> Digital Signatures -> Adva ASD)
+        $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+          Where-Object { $_.FullName -like '*\x64\signtool.exe' } | Sort-Object FullName -Descending | Select-Object -First 1
+        if (-not $signtool) { throw 'signtool.exe was not found on this runner.' }
+        $final = Join-Path $env:RUNNER_TEMP 'release-files/ASD-Setup.exe'
+        & $signtool.FullName sign /fd SHA256 /f $env:PFX /p $env:MSIX_PFX_PASSWORD $final 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'setup-build.txt') -Append
+        if ($LASTEXITCODE -ne 0) { throw "signtool failed on ASD-Setup.exe (exit code $LASTEXITCODE)" }
+        Write-Host "ASD-Setup.exe: $([math]::Round((Get-Item $final).Length / 1MB, 1)) MB, signed"
 
     - name: Add the files to the release "latest"
       if: steps.cert.outputs.have_cert == 'true' && steps.msix.outcome == 'success'

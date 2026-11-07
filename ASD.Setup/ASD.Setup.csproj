@@ -39,6 +39,8 @@
     <Content Include="app.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <!-- the icon of .automation files (written next to ASD's data when the association is registered) -->
+    <EmbeddedResource Include="app.ico" LogicalName="app.ico" />
     <!-- the license shown on the first page -->
     <EmbeddedResource Include="..\LICENSE" LogicalName="LICENSE" />
     <!-- the PUBLIC certificate of the package (CI copies it here from the signing secret): the only publisher this installer trusts -->

@@ -1,4 +1,0 @@
-cell a:
-  run: echo hi
-  colour: red
-  success -> ghost

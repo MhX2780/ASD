@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using Microsoft.Win32;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Windows.ApplicationModel;
@@ -23,6 +25,19 @@ internal static class Installer
 
     private static string WorkDir => Path.Combine(Path.GetTempPath(), "ASD-Setup");
 
+    /// <summary>A plain text log of what the installer did (default: %TEMP%\ASD-Setup\setup.log, or --log FILE).</summary>
+    public static string LogFile { get; set; } = Path.Combine(Path.GetTempPath(), "ASD-Setup", "setup.log");
+
+    public static void Log(string line)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(LogFile)!);
+            File.AppendAllText(LogFile, $"{DateTime.Now:HH:mm:ss}  {line}{Environment.NewLine}");
+        }
+        catch { /* a log must never break the install */ }
+    }
+
     // ───────── what is here ─────────
 
     /// <summary>ASD.msix placed next to this installer (a USB stick, a CD): then nothing is downloaded.</summary>
@@ -32,6 +47,39 @@ internal static class Installer
         if (string.IsNullOrEmpty(folder)) return null;
         var path = Path.Combine(folder, "ASD.msix");
         return File.Exists(path) ? path : null;
+    }
+
+    /// <summary>
+    /// An Extensions\ folder next to this installer (the offline extensions package: extensions.txt + one folder per extension)
+    /// is copied to %LocalAppData%\ASD\extensions-offline, where the installed ASD looks for it. Returns how many extensions were copied.
+    /// </summary>
+    public static int CopyOfflineExtensions()
+    {
+        try
+        {
+            var folder = Path.GetDirectoryName(Environment.ProcessPath);
+            if (string.IsNullOrEmpty(folder)) return 0;
+            var source = Path.Combine(folder, "Extensions");
+            if (!File.Exists(Path.Combine(source, "extensions.txt"))) return 0;
+
+            var target = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ASD", "extensions-offline");
+            if (Directory.Exists(target)) Directory.Delete(target, recursive: true);
+            Directory.CreateDirectory(target);
+
+            foreach (var dir in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
+                Directory.CreateDirectory(Path.Combine(target, Path.GetRelativePath(source, dir)));
+            foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+                File.Copy(file, Path.Combine(target, Path.GetRelativePath(source, file)), overwrite: true);
+
+            var count = Directory.GetDirectories(target).Length;
+            Log($"offline extensions copied: {count} extension(s) -> {target}");
+            return count;
+        }
+        catch (Exception e)
+        {
+            Log("could not copy the offline extensions: " + e.Message);
+            return 0;
+        }
     }
 
     /// <summary>The installed ASD (for the current user), or null.</summary>
@@ -55,13 +103,60 @@ internal static class Installer
         return reader.ReadToEnd();
     }
 
-    public static byte[]? ReadCertificate()
+    public static byte[]? ReadCertificate() => ReadBytes("ASD.cer");
+
+    private static byte[]? ReadBytes(string resourceName)
     {
-        using var stream = typeof(Installer).Assembly.GetManifestResourceStream("ASD.cer");
+        using var stream = typeof(Installer).Assembly.GetManifestResourceStream(resourceName);
         if (stream == null) return null;
         using var memory = new MemoryStream();
         stream.CopyTo(memory);
         return memory.ToArray();
+    }
+
+    [DllImport("shell32.dll")]
+    private static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);
+
+    /// <summary>
+    /// Makes .automation files open in ASD with a double-click, and gives them ASD's icon. Written for the current user only
+    /// (HKCU\Software\Classes: no administrator permission). The package itself already offers ASD in "Open with"; this makes it
+    /// the program used for a double-click when the person has not chosen another one. The command goes through the
+    /// asd.exe alias, because the exe inside the package can't be started by path.
+    /// </summary>
+    public static void RegisterFileType()
+    {
+        try
+        {
+            var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            var alias = Path.Combine(local, "Microsoft", "WindowsApps", "asd.exe");
+
+            var icon = Path.Combine(local, "ASD", "automation.ico");
+            var bytes = ReadBytes("app.ico");
+            if (bytes != null)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(icon)!);
+                File.WriteAllBytes(icon, bytes);
+            }
+
+            using var classes = Registry.CurrentUser.CreateSubKey(@"Software\Classes")
+                ?? throw new InvalidOperationException("HKCU\\Software\\Classes could not be opened.");
+            using (var extension = classes.CreateSubKey(".automation"))
+                extension.SetValue("", "ASD.Automation.File");
+            using (var program = classes.CreateSubKey("ASD.Automation.File"))
+            {
+                program.SetValue("", "ASD Automation");
+                if (bytes != null) { using var key = program.CreateSubKey("DefaultIcon"); key.SetValue("", icon); }
+                using var command = program.CreateSubKey(@"shell\open\command");
+                command.SetValue("", $"\"{alias}\" \"%1\"");
+            }
+
+            SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero);   // SHCNE_ASSOCCHANGED: Explorer reloads the icons
+            Log("the .automation file type is registered for this user");
+        }
+        catch (Exception e)
+        {
+            Log("could not register the .automation file type: " + e.Message);
+        }
     }
 
     public static void CheckWindows()
@@ -209,7 +304,7 @@ internal static class Installer
         }
         catch (System.ComponentModel.Win32Exception e) when (e.NativeErrorCode == 1223)
         {
-            throw new SetupException("Permission was not given. ASD needs it once, to trust its own publisher (\"Adva ASD\") so that Windows will install and update it. Press Install again and choose Yes.");
+            throw new SetupException("Permission was not given. ASD needs it once, so that Windows will install and update it. Press Install again and choose Yes.");
         }
         finally
         {

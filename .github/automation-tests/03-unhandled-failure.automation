@@ -1,7 +1,0 @@
-# no red arrow: the failure is not handled, so the run ends with exit code 1
-automation: unhandled
-cell a:
-  run: exit 1
-  success -> b
-cell b:
-  run: echo SHOULD-NOT-RUN

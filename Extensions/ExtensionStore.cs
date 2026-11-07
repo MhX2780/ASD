@@ -94,7 +94,20 @@ internal static class ExtensionStore
     // the one on GitHub) and one folder per extension (the unpacked extensions.zip). It is copied along with the app from a CD-R.
     // When its list matches the one on GitHub nothing is downloaded; when GitHub has a different one, the whole package is downloaded.
 
-    public static string BundledDir => Path.Combine(AppContext.BaseDirectory, "Extensions");
+    // Two places are looked at, in this order:
+    //   1. Extensions\ next to ASD.exe  (the unpackaged copy, e.g. straight from a CD-R)
+    //   2. %LocalAppData%\ASD\extensions-offline\  (the installed ASD: its own folder is read-only, so ASD-Setup.exe copies an
+    //      Extensions\ folder that lies next to the installer to here while it installs)
+    public static string BundledDir
+    {
+        get
+        {
+            var next = Path.Combine(AppContext.BaseDirectory, "Extensions");
+            if (File.Exists(Path.Combine(next, "extensions.txt"))) return next;
+            var copied = AppPaths.File("extensions-offline");
+            return File.Exists(Path.Combine(copied, "extensions.txt")) ? copied : next;
+        }
+    }
     private static string BundledListFile => Path.Combine(BundledDir, "extensions.txt");
 
     public static bool HasBundled

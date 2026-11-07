@@ -34,6 +34,8 @@ internal static class Notifier
     {
         _ui = ui;
         _currentTool = currentTool;
+        TaskbarBadge.Set(0);                               // a number left from the last run is not valid any more
+        Changed += () => TaskbarBadge.Set(Unread);         // the taskbar icon shows how many notifications are unread
         try
         {
             var manager = AppNotificationManager.Default;

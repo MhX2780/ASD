@@ -269,6 +269,61 @@ public sealed partial class MainWindow : Window
         Activate();
     }
 
+    /// <summary>
+    /// ASD was started (or is already open and was started again) from a Jump List item or by opening an .automation file.
+    /// </summary>
+    internal void HandleLaunch(LaunchRequest request)
+    {
+        if (request.Tool == null && request.FilePath == null) return;
+        BringToFront();
+
+        if (request.FilePath != null) { _ = OpenAutomationFileAsync(request.FilePath); return; }
+        if (request.Tool == "updates") { UpdateWindow.ShowWindow(); return; }
+        OpenTool(request.Tool!);
+    }
+
+    /// <summary>Opens an .automation file in the Automation tool. It only opens: nothing runs until Start is clicked.</summary>
+    private async Task OpenAutomationFileAsync(string path)
+    {
+        try
+        {
+            await _splash;
+            if (AutomationSession.Dirty && (AutomationSession.Doc.Cells.Count > 0 || AutomationSession.Invalid))
+            {
+                var ask = new ContentDialog
+                {
+                    XamlRoot = RootNav.XamlRoot,
+                    RequestedTheme = RootGrid.ActualTheme,
+                    Title = "Discard changes?",
+                    Content = new TextBlock
+                    {
+                        Text = "The automation that is open has changes that are not saved to a file. Opening another file replaces it.",
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                    PrimaryButtonText = "Discard",
+                    CloseButtonText = "Cancel",
+                    DefaultButton = ContentDialogButton.Close,
+                };
+                if (await ask.ShowAsync() != ContentDialogResult.Primary) return;
+            }
+
+            var text = await File.ReadAllTextAsync(path);
+            AutomationSession.Open(path, text);
+            OpenTool("automation", "file");   // a parameter makes the page start again from the session
+        }
+        catch (Exception ex)
+        {
+            await new ContentDialog
+            {
+                XamlRoot = RootNav.XamlRoot,
+                RequestedTheme = RootGrid.ActualTheme,
+                Title = "The file could not be opened",
+                Content = new TextBlock { Text = ex.Message, TextWrapping = TextWrapping.Wrap },
+                CloseButtonText = "OK",
+            }.ShowAsync();
+        }
+    }
+
     private async Task ShowNotificationsAsync()
     {
         if (_notesOpen) return;
@@ -445,7 +500,30 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            if (AppPaths.GithubActions || _updatePrompted || !UpdateService.CanCheck) return;
+            if (AppPaths.GithubActions) return;
+
+            // the last silent update could not be installed: say why, once (the old ASD was opened again)
+            var failed = UpdateService.TakeFailedUpdateMessage();
+            if (failed != null)
+            {
+                await _splash;
+                await new ContentDialog
+                {
+                    XamlRoot = RootNav.XamlRoot,
+                    RequestedTheme = RootGrid.ActualTheme,
+                    Title = "The last update was not installed",
+                    Content = new TextBlock
+                    {
+                        Text = failed + "\n\nASD is still the previous version. You can try again from Updates, or run ASD-Setup.exe.",
+                        TextWrapping = TextWrapping.Wrap,
+                        IsTextSelectionEnabled = true,
+                    },
+                    CloseButtonText = "OK",
+                    DefaultButton = ContentDialogButton.Close,
+                }.ShowAsync();
+            }
+
+            if (_updatePrompted || !UpdateService.CanCheck) return;
 
             var check = await UpdateService.CheckAsync(CancellationToken.None);
             if (!check.Available) return;

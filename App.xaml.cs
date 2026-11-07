@@ -1,4 +1,5 @@
 using Microsoft.UI.Xaml;
+using Microsoft.Windows.AppLifecycle;
 
 namespace ASD;
 
@@ -23,6 +24,24 @@ public partial class App : Application
             return;
         }
 
+        // The installed ASD runs once. A second start (a Jump List item, a double-clicked .automation file) is handed to the
+        // ASD that is already open, and this process quits at once.
+        if (AppIdentity.IsPackaged)
+        {
+            var main = AppInstance.FindOrRegisterForKey("ASD-main");
+            if (!main.IsCurrent)
+            {
+                var activation = AppInstance.GetCurrent().GetActivatedEventArgs();
+                _ = Task.Run(async () =>
+                {
+                    try { await main.RedirectActivationToAsync(activation); } catch { }
+                    Environment.Exit(0);
+                });
+                return;
+            }
+            main.Activated += (_, a) => LaunchRouter.Deliver(a);
+        }
+
         // cd-r.txt next to ASD.exe = running from a read-only disc (CD-R / DVD):
         // copy the app to a folder the user picks first, instead of opening the main window.
         if (InstallWindow.IsDiscCopy)
@@ -37,5 +56,12 @@ public partial class App : Application
         var window = new MainWindow();
         MainWindow = window;
         window.Activate();
+
+        if (AppIdentity.IsPackaged)
+        {
+            // started from a Jump List item, or by opening an .automation file
+            window.HandleLaunch(LaunchRouter.Read(AppInstance.GetCurrent().GetActivatedEventArgs()));
+            _ = AppJumpList.SetupAsync();
+        }
     }
 }

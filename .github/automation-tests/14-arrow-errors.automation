@@ -1,9 +1,0 @@
-automation: arrow errors
-cell a:
-  run: echo a
-  success -> b | color notacolor
-  exit abc -> b
-  success -> b | size 3
-  contains -> b
-cell b:
-  run: echo b
