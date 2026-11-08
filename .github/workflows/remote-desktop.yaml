@@ -34,32 +34,39 @@ jobs:
         authkey: ${{ secrets.TS_AUTHKEY }}
         hostname: asd-runner-${{ github.run_id }}
 
-    - name: Turn Remote Desktop on
+    - name: Turn Remote Desktop on and Fix 0x204 Error
       shell: pwsh
       env:
         RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
       run: |-
         $ErrorActionPreference = 'Stop'
 
-        # 1. السماح بالاتصال عن بعد وتعطيل NLA لتوافق تام مع تطبيقات الهواتف
-        Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
-        Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 0
+        # 1. السماح بالاتصال عن بعد وتعطيل NLA (مصادقة مستوى الشبكة) لتوافق تام مع الهواتف
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
         
-        # 2. إصلاح صلاحيات الحساب المحلي (runneradmin)
+        # 2. إصلاح صلاحيات الحساب المحلي
         reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f | Out-Null
 
-        # 3. تشغيل خدمة Remote Desktop وتفعيل جدار الحماية على جميع النطاقات (لحل خطأ 0x204 نهائياً)
-        Set-Service -Name TermService -StartupType Automatic
-        Start-Service -Name TermService
-        
-        # تفعيل قواعد Remote Desktop الافتراضية وجعلها متاحة لكل الشبكات (Public/Private)
-        Get-NetFirewallRule -DisplayGroup "Remote Desktop" | Set-NetFirewallRule -Profile Any -Enabled True
-        New-NetFirewallRule -DisplayName 'Tailscale RDP 3389' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Any | Out-Null
+        # 3. تفعيل قواعد جدار الحماية لجميع الشبكات (Public/Private) وفتح المنفذ 3389
+        Set-NetFirewallRule -DisplayGroup "Remote Desktop" -Profile Any -Enabled True
+        New-NetFirewallRule -DisplayName 'Tailscale RDP 3389' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
 
-        # 4. تعيين كلمة المرور لحساب المستخدم
+        # 4. إعداد حساب المستخدم وكلمة المرور
         $user = $env:USERNAME
-        Set-LocalUser -Name $user -Password (ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force)
-        Write-Host "Remote Desktop is on. Sign in as: $user"
+        $securePassword = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+        
+        # تعيين كلمة المرور وجعلها لا تنتهي صلاحيتها أبداً
+        Set-LocalUser -Name $user -Password $securePassword -PasswordNeverExpires $true
+        
+        # إضافة المستخدم لمجموعة الاتصال عن بعد لضمان الصلاحيات
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction SilentlyContinue
+
+        # 5. إعادة تشغيل خدمة الطرفية لتطبيق إعدادات NLA فوراً (خطوة حاسمة لحل 0x204)
+        Set-Service -Name TermService -StartupType Automatic
+        Restart-Service -Name TermService -Force
+
+        Write-Host "Remote Desktop is on and configured. Sign in as: $user"
         "RDP_USER=$user" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
     - name: Make the remote session lighter (less to send over the network)
