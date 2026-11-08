@@ -1,0 +1,146 @@
+name: Remote Desktop (Tailscale)
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'Keep the machine for at most this many minutes (5 - 330)'
+        default: '60'
+      idle_minutes:
+        description: 'Stop by itself after nobody was connected for this many minutes'
+        default: '10'
+
+permissions:
+  contents: read
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+    - name: Check the secrets
+      shell: pwsh
+      env:
+        TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+      run: |-
+        if (-not $env:TS_AUTHKEY) { throw 'The secret TS_AUTHKEY is missing (a Tailscale auth key).' }
+        if (-not $env:RDP_PASSWORD -or $env:RDP_PASSWORD.Length -lt 12) { throw 'The secret RDP_PASSWORD is missing or shorter than 12 characters.' }
+        Write-Host 'Secrets found.'
+
+    - name: Join the Tailscale network
+      uses: tailscale/github-action@v3
+      with:
+        authkey: ${{ secrets.TS_AUTHKEY }}
+        hostname: asd-runner-${{ github.run_id }}
+
+    - name: Turn Remote Desktop on
+      shell: pwsh
+      env:
+        RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+      run: |-
+        $ErrorActionPreference = 'Stop'
+
+        # 1. السماح بالاتصال عن بعد وتعطيل NLA لتوافق تام مع تطبيقات الهواتف
+        Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+        Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 0
+        
+        # 2. إصلاح صلاحيات الحساب المحلي (runneradmin)
+        reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f | Out-Null
+
+        # 3. تشغيل خدمة Remote Desktop وتفعيل جدار الحماية على جميع النطاقات (لحل خطأ 0x204 نهائياً)
+        Set-Service -Name TermService -StartupType Automatic
+        Start-Service -Name TermService
+        
+        # تفعيل قواعد Remote Desktop الافتراضية وجعلها متاحة لكل الشبكات (Public/Private)
+        Get-NetFirewallRule -DisplayGroup "Remote Desktop" | Set-NetFirewallRule -Profile Any -Enabled True
+        New-NetFirewallRule -DisplayName 'Tailscale RDP 3389' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Any | Out-Null
+
+        # 4. تعيين كلمة المرور لحساب المستخدم
+        $user = $env:USERNAME
+        Set-LocalUser -Name $user -Password (ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force)
+        Write-Host "Remote Desktop is on. Sign in as: $user"
+        "RDP_USER=$user" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+    - name: Make the remote session lighter (less to send over the network)
+      shell: pwsh
+      continue-on-error: true
+      run: |-
+        function Set-Dw($path, $name, $value) {
+          New-Item -Path $path -Force | Out-Null
+          New-ItemProperty -Path $path -Name $name -Value $value -PropertyType DWord -Force | Out-Null
+        }
+
+        $ts = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+        Set-Dw $ts 'MaxXResolution' 1280
+        Set-Dw $ts 'MaxYResolution' 720
+        Set-Dw $ts 'MaxMonitors' 1
+        Set-Dw $ts 'ImageQuality' 2
+        Set-Dw $ts 'ColorDepth' 3
+
+        Set-Dw 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting' 2
+        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name UserPreferencesMask -PropertyType Binary -Force -Value ([byte[]](0x90,0x12,0x03,0x80,0x10,0x00,0x00,0x00)) | Out-Null
+        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name DragFullWindows -PropertyType String -Force -Value '0' | Out-Null
+        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name Wallpaper -PropertyType String -Force -Value '' | Out-Null
+        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop\WindowMetrics' -Name MinAnimate -PropertyType String -Force -Value '0' | Out-Null
+        Set-Dw 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency' 0
+        Set-Dw 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarAnimations' 0
+
+        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name MenuShowDelay -PropertyType String -Force -Value '0' | Out-Null
+        New-ItemProperty -Path 'HKCU:\Control Panel\Mouse' -Name MouseHoverTime -PropertyType String -Force -Value '10' | Out-Null
+        Set-Dw $ts 'SelectTransport' 0
+        Set-Dw 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations' 'DWMFRAMEINTERVAL' 15
+        New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name Win32PrioritySeparation -PropertyType DWord -Force -Value 38 | Out-Null
+
+        try { Set-MpPreference -DisableRealtimeMonitoring $true } catch { Write-Host 'Defender could not be paused (fine).' }
+        powercfg /setactive SCHEME_MIN 2>&1 | Out-Null
+        Write-Host 'Lighter remote session settings applied.'
+
+    - name: Keep the machine until you are done
+      shell: pwsh
+      env:
+        MINUTES: ${{ inputs.minutes }}
+        IDLE_MINUTES: ${{ inputs.idle_minutes }}
+      run: |-
+        $ts = (Get-Command tailscale -ErrorAction SilentlyContinue)?.Source
+        if (-not $ts) { $ts = 'C:\Program Files\Tailscale\tailscale.exe' }
+        $ip = (& $ts ip -4 | Select-Object -First 1)
+        $name = "asd-runner-${{ github.run_id }}"
+
+        $minutes = [int]$env:MINUTES;      if ($minutes -lt 5)  { $minutes = 5 };  if ($minutes -gt 330) { $minutes = 330 }
+        $idleMax = [int]$env:IDLE_MINUTES; if ($idleMax -lt 2)  { $idleMax = 2 };  if ($idleMax -gt 120) { $idleMax = 120 }
+
+        $lines = @(
+          '## Remote Desktop is ready',
+          '',
+          "- Device in the Tailscale app: **$name**",
+          "- PC name in Windows App: **$ip**",
+          "- User account: **$env:RDP_USER** (password = the secret RDP_PASSWORD)",
+          "- Stops after $minutes minutes, or after $idleMax minutes with nobody connected. To stop now: cancel this run, or create the file C:\stop.txt on the machine."
+        )
+        $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+        Write-Host '=========================================='
+        Write-Host "READY  PC name: $ip   User: $env:RDP_USER   Device: $name"
+        Write-Host '=========================================='
+
+        Write-Host '--- tailscale netcheck (nearest relay servers and their delay) ---'
+        try { & $ts netcheck 2>&1 | Select-Object -First 25 | ForEach-Object { Write-Host $_ } } catch { Write-Host 'netcheck failed' }
+
+        $end = (Get-Date).AddMinutes($minutes)
+        $lastBusy = Get-Date
+        $everConnected = $false
+        $lastRoute = Get-Date '2000-01-01'
+        while ((Get-Date) -lt $end) {
+          if (Test-Path 'C:\stop.txt') { Write-Host 'C:\stop.txt found: stopping.'; break }
+          $busy = @(Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue).Count -gt 0
+          if ($busy) { $lastBusy = Get-Date; $everConnected = $true }
+          if ($busy -and ((Get-Date) - $lastRoute).TotalSeconds -ge 90) {
+            $lastRoute = Get-Date
+            $route = & $ts status 2>&1 | Select-String -Pattern 'relay|direct' | ForEach-Object { $_.Line.Trim() }
+            Write-Host ("ROUTE  " + (Get-Date -Format 'HH:mm:ss') + "  " + ($route -join ' | '))
+          }
+          $limit = if ($everConnected) { $idleMax } else { [Math]::Max(15, $idleMax) }
+          if (((Get-Date) - $lastBusy).TotalMinutes -ge $limit) { Write-Host "Nobody connected for $limit minutes: stopping."; break }
+          Start-Sleep -Seconds 20
+        }
+        Write-Host 'Done. The machine will be removed.'
