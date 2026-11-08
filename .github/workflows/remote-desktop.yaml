@@ -1,0 +1,182 @@
+name: Remote Desktop (Tailscale)
+
+# Starts a Windows machine on GitHub, joins it to YOUR Tailscale network and turns Remote Desktop on,
+# so you can open it from the phone with the "Windows App" (Microsoft Remote Desktop) and use ASD on it.
+#
+# One-time setup (GitHub  ->  repo  ->  Settings  ->  Secrets and variables  ->  Actions):
+#   TS_AUTHKEY    a Tailscale auth key: admin console -> Settings -> Keys -> Generate auth key
+#                 (turn ON: Reusable, Ephemeral, Pre-approved. No tag needed.)
+#   RDP_PASSWORD  the password you will type in Windows App (12+ characters, letters + digits + a symbol)
+#
+# Use: Actions -> "Remote Desktop (Tailscale)" -> Run workflow. When the job log says "READY", open the
+# Tailscale app on the phone, copy the 100.x.y.z address of the device "asd-runner-...", and connect.
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'Keep the machine for at most this many minutes (5 - 330)'
+        default: '60'
+      idle_minutes:
+        description: 'Stop by itself after nobody was connected for this many minutes'
+        default: '10'
+      get_asd:
+        description: 'Put the latest released ASD on the desktop'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+    - name: Check the secrets
+      shell: pwsh
+      env:
+        TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+      run: |-
+        if (-not $env:TS_AUTHKEY) { throw 'The secret TS_AUTHKEY is missing (a Tailscale auth key).' }
+        if (-not $env:RDP_PASSWORD -or $env:RDP_PASSWORD.Length -lt 12) { throw 'The secret RDP_PASSWORD is missing or shorter than 12 characters.' }
+        Write-Host 'Secrets found.'
+
+    - name: Join the Tailscale network
+      uses: tailscale/github-action@v3
+      with:
+        authkey: ${{ secrets.TS_AUTHKEY }}
+        hostname: asd-runner-${{ github.run_id }}
+
+    - name: Turn Remote Desktop on
+      shell: pwsh
+      env:
+        RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+      run: |-
+        $ErrorActionPreference = 'Stop'
+
+        # allow Remote Desktop, disable NLA for mobile app compatibility, and fix local account RDP access token filter
+        Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+        Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 0
+        
+        New-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Force | Out-Null
+        New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name LocalAccountTokenFilterPolicy -Value 1 -PropertyType DWord -Force | Out-Null
+
+        Set-Service -Name TermService -StartupType Automatic
+        Start-Service -Name TermService
+        New-NetFirewallRule -DisplayName 'ASD RDP 3389' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Domain,Private,Public | Out-Null
+
+        # the account you will sign in with
+        $user = $env:USERNAME
+        Set-LocalUser -Name $user -Password (ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force)
+        Write-Host "Remote Desktop is on. Sign in as: $user"
+        "RDP_USER=$user" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+    - name: Make the remote session lighter (less to send over the network)
+      shell: pwsh
+      continue-on-error: true
+      run: |-
+        function Set-Dw($path, $name, $value) {
+          New-Item -Path $path -Force | Out-Null
+          New-ItemProperty -Path $path -Name $name -Value $value -PropertyType DWord -Force | Out-Null
+        }
+
+        # what the host sends: a 1280x720 picture, one monitor, medium image quality
+        $ts = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+        Set-Dw $ts 'MaxXResolution' 1280
+        Set-Dw $ts 'MaxYResolution' 720
+        Set-Dw $ts 'MaxMonitors' 1
+        Set-Dw $ts 'ImageQuality' 2
+        Set-Dw $ts 'ColorDepth' 3
+
+        # no animations, no transparency (Mica), no wallpaper: far fewer screen updates to send
+        Set-Dw 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting' 2
+        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name UserPreferencesMask -PropertyType Binary -Force -Value ([byte[]](0x90,0x12,0x03,0x80,0x10,0x00,0x00,0x00)) | Out-Null
+        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name DragFullWindows -PropertyType String -Force -Value '0' | Out-Null
+        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name Wallpaper -PropertyType String -Force -Value '' | Out-Null
+        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop\WindowMetrics' -Name MinAnimate -PropertyType String -Force -Value '0' | Out-Null
+        Set-Dw 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency' 0
+        Set-Dw 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarAnimations' 0
+
+        # click / hover delay: Windows itself waits before showing menus (400 ms) and hover effects (400 ms) - make that instant,
+        # let both RDP transports (UDP + TCP) be used, and refresh the desktop up to ~66 times per second instead of ~30
+        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name MenuShowDelay -PropertyType String -Force -Value '0' | Out-Null
+        New-ItemProperty -Path 'HKCU:\Control Panel\Mouse' -Name MouseHoverTime -PropertyType String -Force -Value '10' | Out-Null
+        Set-Dw $ts 'SelectTransport' 0
+        Set-Dw 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations' 'DWMFRAMEINTERVAL' 15
+
+        # Windows Server favours background services; for a desktop you drive by hand "Programs" is far more responsive
+        # (this is the same setting as System Properties -> Performance Options -> Advanced -> Processor scheduling)
+        New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name Win32PrioritySeparation -PropertyType DWord -Force -Value 38 | Out-Null
+
+        # leave the CPU to the desktop session
+        try { Set-MpPreference -DisableRealtimeMonitoring $true } catch { Write-Host 'Defender could not be paused (fine).' }
+        powercfg /setactive SCHEME_MIN 2>&1 | Out-Null
+        Write-Host 'Lighter remote session settings applied.'
+
+    - name: Put ASD on the desktop
+      if: ${{ inputs.get_asd }}
+      shell: pwsh
+      continue-on-error: true
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |-
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        $zip = Join-Path $env:RUNNER_TEMP 'ASD.zip'
+        gh release download latest --repo "${{ github.repository }}" --pattern 'ASD.zip' --dir $env:RUNNER_TEMP --clobber
+        if (-not (Test-Path $zip)) { throw 'ASD.zip was not found in the release "latest".' }
+        Expand-Archive -Path $zip -DestinationPath (Join-Path $desktop 'ASD') -Force
+        Write-Host "ASD is on the desktop: $desktop\ASD\ASD.exe"
+
+    - name: Keep the machine until you are done
+      shell: pwsh
+      env:
+        MINUTES: ${{ inputs.minutes }}
+        IDLE_MINUTES: ${{ inputs.idle_minutes }}
+      run: |-
+        $ts = (Get-Command tailscale -ErrorAction SilentlyContinue)?.Source
+        if (-not $ts) { $ts = 'C:\Program Files\Tailscale\tailscale.exe' }
+        $ip = (& $ts ip -4 | Select-Object -First 1)
+        $name = "asd-runner-${{ github.run_id }}"
+
+        $minutes = [int]$env:MINUTES;      if ($minutes -lt 5)  { $minutes = 5 };  if ($minutes -gt 330) { $minutes = 330 }
+        $idleMax = [int]$env:IDLE_MINUTES; if ($idleMax -lt 2)  { $idleMax = 2 };  if ($idleMax -gt 120) { $idleMax = 120 }
+
+        $lines = @(
+          '## Remote Desktop is ready',
+          '',
+          "- Device in the Tailscale app: **$name**",
+          "- PC name in Windows App: **$ip**",
+          "- User account: **$env:RDP_USER** (password = the secret RDP_PASSWORD)",
+          "- Stops after $minutes minutes, or after $idleMax minutes with nobody connected. To stop now: cancel this run, or create the file C:\stop.txt on the machine."
+        )
+        $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+        Write-Host '=========================================='
+        Write-Host "READY  PC name: $ip   User: $env:RDP_USER   Device: $name"
+        Write-Host '=========================================='
+
+        # Where is the lag from?  "relay" = the traffic goes through a Tailscale relay server (slow),
+        # "direct" = phone and machine talk to each other (fast).
+        Write-Host '--- tailscale netcheck (nearest relay servers and their delay) ---'
+        try { & $ts netcheck 2>&1 | Select-Object -First 25 | ForEach-Object { Write-Host $_ } } catch { Write-Host 'netcheck failed' }
+
+        $end = (Get-Date).AddMinutes($minutes)
+        $lastBusy = Get-Date
+        $everConnected = $false
+        $lastRoute = Get-Date '2000-01-01'
+        while ((Get-Date) -lt $end) {
+          if (Test-Path 'C:\stop.txt') { Write-Host 'C:\stop.txt found: stopping.'; break }
+          $busy = @(Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue).Count -gt 0
+          if ($busy) { $lastBusy = Get-Date; $everConnected = $true }
+          if ($busy -and ((Get-Date) - $lastRoute).TotalSeconds -ge 90) {
+            $lastRoute = Get-Date
+            $route = & $ts status 2>&1 | Select-String -Pattern 'relay|direct' | ForEach-Object { $_.Line.Trim() }
+            Write-Host ("ROUTE  " + (Get-Date -Format 'HH:mm:ss') + "  " + ($route -join ' | '))
+          }
+          # before the first connection wait at least 15 minutes, afterwards only $idleMax
+          $limit = if ($everConnected) { $idleMax } else { [Math]::Max(15, $idleMax) }
+          if (((Get-Date) - $lastBusy).TotalMinutes -ge $limit) { Write-Host "Nobody connected for $limit minutes: stopping."; break }
+          Start-Sleep -Seconds 20
+        }
+        Write-Host 'Done. The machine will be removed.'
