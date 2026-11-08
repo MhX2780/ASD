@@ -1,4 +1,4 @@
-name: Remote Desktop (Tailscale)
+name: Remote Desktop (Cloudflare Quick Tunnel)
 
 on:
   workflow_dispatch:
@@ -21,148 +21,108 @@ jobs:
     - name: Check the secrets
       shell: pwsh
       env:
-        TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
       run: |-
-        if (-not $env:TS_AUTHKEY) { throw 'The secret TS_AUTHKEY is missing (a Tailscale auth key).' }
         if (-not $env:RDP_PASSWORD -or $env:RDP_PASSWORD.Length -lt 12) { throw 'The secret RDP_PASSWORD is missing or shorter than 12 characters.' }
         Write-Host 'Secrets found.'
 
-    - name: Join the Tailscale network
-      uses: tailscale/github-action@v3
-      with:
-        authkey: ${{ secrets.TS_AUTHKEY }}
-        hostname: asd-runner-${{ github.run_id }}
-        args: --accept-dns=false # تجاوز مشكلة DNS التي ظهرت في الصورة
-
-    - name: Turn Remote Desktop on and Fix 0x204 Error
+    - name: Enable Remote Desktop (RDP)
       shell: pwsh
       env:
         RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
       run: |-
         $ErrorActionPreference = 'Stop'
 
-        # 1. السماح بالاتصال عن بعد وتعطيل NLA (مصادقة مستوى الشبكة) لتوافق تام مع الهواتف
+        # تفعيل RDP وتعطيل NLA لتسهيل الاتصال
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
         
-        # 2. إصلاح صلاحيات الحساب المحلي
-        reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f | Out-Null
-
-        # 3. تفعيل قواعد جدار الحماية لجميع الشبكات (Public/Private) وفتح المنفذ 3389
+        # إعداد جدار الحماية
         Set-NetFirewallRule -DisplayGroup "Remote Desktop" -Profile Any -Enabled True
-        New-NetFirewallRule -DisplayName 'Tailscale RDP 3389' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
 
-        # 4. إعداد حساب المستخدم وكلمة المرور
-        $user = $env:USERNAME # سيكون runneradmin
+        # إعداد المستخدم وكلمة المرور
+        $user = $env:USERNAME
         $securePassword = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
-        
-        # تعيين كلمة المرور وجعلها لا تنتهي صلاحيتها أبداً
         Set-LocalUser -Name $user -Password $securePassword -PasswordNeverExpires $true
-        
-        # إضافة المستخدم لمجموعة الاتصال عن بعد لضمان الصلاحيات
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction SilentlyContinue
 
-        # 5. [الحل الجذري لخطأ 0x204] فحص المنفذ 3389 وإنهاء أي عملية متعارضة
-        Write-Host "Checking for port 3389 conflicts..."
-        $conn = Get-NetTCPConnection -LocalPort 3389 -ErrorAction SilentlyContinue
-        if ($conn) {
-            $pids = $conn.OwningProcess | Select-Object -Unique
-            foreach ($processId in $pids) {
-                $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
-                if ($proc -and $proc.Name -ne 'svchost') { # svchost هو المسؤول عن TermService
-                    Write-Host "Port 3389 is occupied by $($proc.Name) (PID: $processId). Killing it..."
-                    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+        # إعادة تشغيل الخدمة
+        Set-Service -Name TermService -StartupType Automatic
+        Restart-Service -Name TermService -Force
+
+        Write-Host "Remote Desktop is ON. User: $user"
+        "RDP_USER=$user" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+    - name: Install cloudflared and Start Quick Tunnel
+      shell: pwsh
+      run: |-
+        # تحميل أداة cloudflared
+        Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
+        
+        # تشغيل النفق في الخلفية (Quick Tunnel) وتوجيهه إلى منفذ RDP المحلي
+        Write-Host "Starting Cloudflare Quick Tunnel to rdp://localhost:3389 ..."
+        $proc = Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url rdp://localhost:3389 --no-autoupdate" -NoNewWindow -RedirectStandardError "tunnel_log.txt" -PassThru
+        
+        # الانتظار حتى يظهر رابط trycloudflare.com
+        $url = $null
+        for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 2
+            if (Test-Path "tunnel_log.txt") {
+                $content = Get-Content "tunnel_log.txt" -Raw
+                $match = [regex]::Match($content, 'https://[a-zA-Z0-9-]+\.trycloudflare\.com')
+                if ($match.Success) {
+                    $url = $match.Value
+                    break
                 }
             }
         }
-
-        # 6. إعادة تشغيل خدمات RDP لتطبيق كل الإعدادات فوراً
-        Write-Host "Restarting Remote Desktop services..."
-        Set-Service -Name TermService -StartupType Automatic
-        Restart-Service -Name TermService -Force -ErrorAction SilentlyContinue
-        Restart-Service -Name UmRdpService -Force -ErrorAction SilentlyContinue
-
-        Write-Host "Remote Desktop is on and configured. Sign in as: $user"
-        "RDP_USER=$user" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-    - name: Make the remote session lighter (less to send over the network)
-      shell: pwsh
-      continue-on-error: true
-      run: |-
-        function Set-Dw($path, $name, $value) {
-          New-Item -Path $path -Force | Out-Null
-          New-ItemProperty -Path $path -Name $name -Value $value -PropertyType DWord -Force | Out-Null
+        
+        if ($url) {
+            Write-Host "Tunnel URL: $url"
+            "TUNNEL_URL=$url" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        } else {
+            Write-Error "Failed to get Cloudflare Tunnel URL. Check tunnel_log.txt for details."
+            Get-Content "tunnel_log.txt" -ErrorAction SilentlyContinue
         }
 
-        $ts = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
-        Set-Dw $ts 'MaxXResolution' 1280
-        Set-Dw $ts 'MaxYResolution' 720
-        Set-Dw $ts 'MaxMonitors' 1
-        Set-Dw $ts 'ImageQuality' 2
-        Set-Dw $ts 'ColorDepth' 3
-
-        Set-Dw 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting' 2
-        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name UserPreferencesMask -PropertyType Binary -Force -Value ([byte[]](0x90,0x12,0x03,0x80,0x10,0x00,0x00,0x00)) | Out-Null
-        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name DragFullWindows -PropertyType String -Force -Value '0' | Out-Null
-        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name Wallpaper -PropertyType String -Force -Value '' | Out-Null
-        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop\WindowMetrics' -Name MinAnimate -PropertyType String -Force -Value '0' | Out-Null
-        Set-Dw 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency' 0
-        Set-Dw 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarAnimations' 0
-
-        New-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name MenuShowDelay -PropertyType String -Force -Value '0' | Out-Null
-        New-ItemProperty -Path 'HKCU:\Control Panel\Mouse' -Name MouseHoverTime -PropertyType String -Force -Value '10' | Out-Null
-        Set-Dw $ts 'SelectTransport' 0
-        Set-Dw 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations' 'DWMFRAMEINTERVAL' 15
-        New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' -Name Win32PrioritySeparation -PropertyType DWord -Force -Value 38 | Out-Null
-
-        try { Set-MpPreference -DisableRealtimeMonitoring $true } catch { Write-Host 'Defender could not be paused (fine).' }
-        powercfg /setactive SCHEME_MIN 2>&1 | Out-Null
-        Write-Host 'Lighter remote session settings applied.'
-
-    - name: Keep the machine until you are done
+    - name: Keep the machine alive
       shell: pwsh
       env:
         MINUTES: ${{ inputs.minutes }}
         IDLE_MINUTES: ${{ inputs.idle_minutes }}
+        RDP_USER: ${{ env.RDP_USER }}
+        TUNNEL_URL: ${{ env.TUNNEL_URL }}
       run: |-
-        $ts = (Get-Command tailscale -ErrorAction SilentlyContinue)?.Source
-        if (-not $ts) { $ts = 'C:\Program Files\Tailscale\tailscale.exe' }
-        $ip = (& $ts ip -4 | Select-Object -First 1)
-        $name = "asd-runner-${{ github.run_id }}"
-
         $minutes = [int]$env:MINUTES;      if ($minutes -lt 5)  { $minutes = 5 };  if ($minutes -gt 330) { $minutes = 330 }
         $idleMax = [int]$env:IDLE_MINUTES; if ($idleMax -lt 2)  { $idleMax = 2 };  if ($idleMax -gt 120) { $idleMax = 120 }
 
         $lines = @(
-          '## Remote Desktop is ready',
+          '## Remote Desktop is ready (Cloudflare Quick Tunnel)',
           '',
-          "- Device in the Tailscale app: **$name**",
-          "- PC name in Windows App: **$ip**",
-          "- User account: **runneradmin** (password = the secret RDP_PASSWORD)", 
-          "- Stops after $minutes minutes, or after $idleMax minutes with nobody connected. To stop now: cancel this run, or create the file C:\stop.txt on the machine."
+          "- **Tunnel URL (Hostname):** $env:TUNNEL_URL",
+          "- **User account:** $env:RDP_USER",
+          "- **Password:** (the secret RDP_PASSWORD)",
+          '',
+          '### How to connect from your PC:',
+          '1. Install cloudflared on your PC.',
+          '2. Run: cloudflared access rdp --hostname <TUNNEL_URL> --url rdp://localhost:13389',
+          '3. Open Remote Desktop and connect to: **localhost:13389**',
+          '',
+          "- Stops after $minutes minutes, or after $idleMax minutes with nobody connected."
         )
         $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-        Write-Host '=========================================='
-        Write-Host "READY  PC name: $ip   User: runneradmin   Device: $name"
-        Write-Host '=========================================='
-
-        Write-Host '--- tailscale netcheck (nearest relay servers and their delay) ---'
-        try { & $ts netcheck 2>&1 | Select-Object -First 25 | ForEach-Object { Write-Host $_ } } catch { Write-Host 'netcheck failed' }
+        
+        Write-Host "=========================================="
+        Write-Host "READY  Tunnel URL: $env:TUNNEL_URL"
+        Write-Host "User: $env:RDP_USER"
+        Write-Host "=========================================="
 
         $end = (Get-Date).AddMinutes($minutes)
         $lastBusy = Get-Date
         $everConnected = $false
-        $lastRoute = Get-Date '2000-01-01'
         while ((Get-Date) -lt $end) {
-          if (Test-Path 'C:\stop.txt') { Write-Host 'C:\stop.txt found: stopping.'; break }
           $busy = @(Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue).Count -gt 0
           if ($busy) { $lastBusy = Get-Date; $everConnected = $true }
-          if ($busy -and ((Get-Date) - $lastRoute).TotalSeconds -ge 90) {
-            $lastRoute = Get-Date
-            $route = & $ts status 2>&1 | Select-String -Pattern 'relay|direct' | ForEach-Object { $_.Line.Trim() }
-            Write-Host ("ROUTE  " + (Get-Date -Format 'HH:mm:ss') + "  " + ($route -join ' | '))
-          }
           $limit = if ($everConnected) { $idleMax } else { [Math]::Max(15, $idleMax) }
           if (((Get-Date) - $lastBusy).TotalMinutes -ge $limit) { Write-Host "Nobody connected for $limit minutes: stopping."; break }
           Start-Sleep -Seconds 20
