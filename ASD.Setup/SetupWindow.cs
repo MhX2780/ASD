@@ -45,6 +45,7 @@ public sealed class SetupWindow : Window
     private Button _install = new();    // Install (first time) or Update
     private Button? _repair;            // only when ASD is already installed
     private Button? _uninstall;         // only when ASD is already installed
+    private Button? _closeButton;       // "Keep version" when a newer version is available
     private CheckBox? _accept;          // only on a first install
     private CheckBox? _deleteData;      // on the Uninstall page
     private Package? _installedPkg;
@@ -93,6 +94,8 @@ public sealed class SetupWindow : Window
             IsBackButtonVisible = false,
             IsPaneToggleButtonVisible = false,
         };
+        var titleLogo = LoadLogo();
+        if (titleLogo != null) titleBar.IconSource = new ImageIconSource { ImageSource = titleLogo };   // the ASD logo left of the title
         _root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         Grid.SetRow(titleBar, 0);
@@ -233,10 +236,22 @@ public sealed class SetupWindow : Window
 
         if (buttons.Length > 0)
         {
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 12, 0, 0) };
-            foreach (var b in buttons) row.Children.Add(b);
-            Grid.SetRow(row, 2);
-            grid.Children.Add(row);
+            // Close / Cancel on the left, every other button on the right
+            var bar = new Grid { VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 12, 0, 0) };
+            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var left = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Left };
+            var right = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+            foreach (var b in buttons)
+            {
+                var onLeft = b.Content is string label && (label == "Close" || label == "Cancel");
+                (onLeft ? left : right).Children.Add(b);
+            }
+            Grid.SetColumn(right, 1);
+            bar.Children.Add(left);
+            bar.Children.Add(right);
+            Grid.SetRow(bar, 2);
+            grid.Children.Add(bar);
         }
         return grid;
     }
@@ -379,7 +394,12 @@ public sealed class SetupWindow : Window
             line = upToDate
                 ? $"ASD {have} is installed and up to date."
                 : $"ASD {have} is installed.";
-            if (latest != null && have < latest) line += $" Version {latest} is available.";
+            if (latest != null && have < latest)
+            {
+                // the person chooses: Update downloads the newest version, "Keep version" leaves ASD as it is
+                line += $" Version {latest} is available: press Update to get it, or keep this version.";
+                if (_closeButton != null) _closeButton.Content = "Keep version";
+            }
 
             if (upToDate)
             {
@@ -452,6 +472,7 @@ public sealed class SetupWindow : Window
 
         var close = MakeButton("Close", "CloseButton");
         close.Click += (_, _) => Close();
+        _closeButton = close;
 
         var buttons = new List<Button> { close };
         _repair = null;

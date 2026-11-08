@@ -178,7 +178,7 @@ public abstract class ToolPage : Page
         UIElement head = grid;
         if (subtitle.Length > 0)
             head = new StackPanel { Spacing = 2, Children = { grid, new TextBlock { Text = subtitle, Opacity = 0.7, TextWrapping = TextWrapping.Wrap } } };
-        ((StackPanel)((ScrollViewer)Content).Content).Children[0] = head;
+        ((StackPanel)((ScrollViewer)Content).Content).Children[1] = head;   // [0] is the breadcrumb, [1] the title block
     }
 
     /// <summary>The rounded box every card uses.</summary>

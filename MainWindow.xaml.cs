@@ -17,6 +17,8 @@ public sealed partial class MainWindow : Window
     private Dictionary<string, ToolInfo> _suggest = new();
     private string _lastClip = "";
     private string? _clipTag, _clipText;
+    private bool _navLoaded;                 // the navigation bar is ready and the Home page is shown
+    private LaunchRequest? _pendingLaunch;   // a Jump List item / .automation file that came in before that
 
     public MainWindow()
     {
@@ -111,6 +113,14 @@ public sealed partial class MainWindow : Window
         OpenTool("home");
         CursorHelper.ApplyHandCursorToNavItems(RootNav);
         _splash = PlaySplashAsync();
+        _navLoaded = true;
+        if (_pendingLaunch != null)
+        {
+            // ASD was started by opening an .automation file (or a Jump List item): go there now, after Home was shown
+            var pending = _pendingLaunch;
+            _pendingLaunch = null;
+            HandleLaunch(pending);
+        }
         _ = CheckForUpdateOnStartupAsync();
         _ = RefreshExtensionsBadgeAsync();
         Notifier.Init(DispatcherQueue, tag => OpenTool(tag), BringToFront, () => _current?.Tag);
@@ -356,6 +366,12 @@ public sealed partial class MainWindow : Window
     /// </summary>
     internal void HandleLaunch(LaunchRequest request)
     {
+        if (!_navLoaded)
+        {
+            // too early (the window is still being built, and Home is opened when it is ready): keep it for then
+            if (request.Tool != null || request.FilePath != null) _pendingLaunch = request;
+            return;
+        }
         if (request.Tool == null && request.FilePath == null) return;
         BringToFront();
 

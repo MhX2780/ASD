@@ -28,6 +28,9 @@ internal static class Installer
     /// <summary>A plain text log of what the installer did (default: %TEMP%\ASD-Setup\setup.log, or --log FILE).</summary>
     public static string LogFile { get; set; } = Path.Combine(Path.GetTempPath(), "ASD-Setup", "setup.log");
 
+    /// <summary>The folder whose ASD.msix / Extensions are used. Normally the folder of this exe; after a rename-relaunch (see App) it is the original folder.</summary>
+    public static string? SourceFolder { get; set; }
+
     public static void Log(string line)
     {
         try
@@ -43,7 +46,7 @@ internal static class Installer
     /// <summary>ASD.msix placed next to this installer (a USB stick, a CD): then nothing is downloaded.</summary>
     public static string? LocalPackage()
     {
-        var folder = Path.GetDirectoryName(Environment.ProcessPath);
+        var folder = SourceFolder ?? Path.GetDirectoryName(Environment.ProcessPath);
         if (string.IsNullOrEmpty(folder)) return null;
         var path = Path.Combine(folder, "ASD.msix");
         return File.Exists(path) ? path : null;
@@ -57,7 +60,7 @@ internal static class Installer
     {
         try
         {
-            var folder = Path.GetDirectoryName(Environment.ProcessPath);
+            var folder = SourceFolder ?? Path.GetDirectoryName(Environment.ProcessPath);
             if (string.IsNullOrEmpty(folder)) return 0;
             var source = Path.Combine(folder, "Extensions");
             if (!File.Exists(Path.Combine(source, "extensions.txt"))) return 0;

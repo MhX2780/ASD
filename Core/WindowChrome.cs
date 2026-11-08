@@ -21,8 +21,35 @@ internal static class WindowChrome
     }
 
     /// <summary>The ASD icon to the left of a window's title (the title bar's own icon).</summary>
-    public static void SetTitleIcon(Microsoft.UI.Xaml.Controls.TitleBar bar)
+    public static void SetTitleIcon(Microsoft.UI.Xaml.Controls.TitleBar bar) => _ = SetTitleIconAsync(bar);
+
+    private static async Task SetTitleIconAsync(Microsoft.UI.Xaml.Controls.TitleBar bar)
     {
+        // the icon is app.ico itself (its biggest picture), so the title bar always matches the taskbar and the exe
+        try
+        {
+            var ico = Path.Combine(AppContext.BaseDirectory, "app.ico");
+            if (File.Exists(ico))
+            {
+                using var file = File.OpenRead(ico);
+                using var stream = file.AsRandomAccessStream();
+                var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream);
+                uint best = 0, width = 0;
+                for (uint i = 0; i < decoder.FrameCount; i++)
+                {
+                    var frame = await decoder.GetFrameAsync(i);
+                    if (frame.PixelWidth > width) { width = frame.PixelWidth; best = i; }
+                }
+                var chosen = await decoder.GetFrameAsync(best);
+                using var bitmap = await chosen.GetSoftwareBitmapAsync(Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8, Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied);
+                var source = new Microsoft.UI.Xaml.Media.Imaging.SoftwareBitmapSource();
+                await source.SetBitmapAsync(bitmap);
+                bar.IconSource = new Microsoft.UI.Xaml.Controls.ImageIconSource { ImageSource = source };
+                return;
+            }
+        }
+        catch { /* use the splash picture below */ }
+
         try
         {
             var path = Path.Combine(AppContext.BaseDirectory, "Assets", "SplashIcon.png");

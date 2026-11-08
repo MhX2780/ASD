@@ -67,7 +67,7 @@ public sealed class KeysStorePage : ToolPage
         Grid.SetColumn(actions, 1);
         header.Children.Add(title);
         header.Children.Add(actions);
-        ((StackPanel)((ScrollViewer)Content).Content).Children[0] = header;   // replace the base class's title + subtitle block
+        ((StackPanel)((ScrollViewer)Content).Content).Children[1] = header;   // replace the base class's title + subtitle block ([0] is the breadcrumb)
 
         _busyView.Children.Add(new ProgressRing { IsActive = true, Width = 56, Height = 56, HorizontalAlignment = HorizontalAlignment.Center });
         _busyView.Children.Add(_busyText);
