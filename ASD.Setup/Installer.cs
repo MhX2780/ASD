@@ -187,7 +187,7 @@ internal static class Installer
             else if (line.StartsWith("SHA256:", StringComparison.OrdinalIgnoreCase)) hash = line["SHA256:".Length..].Trim();
         }
         if (!Version.TryParse(version, out _) || hash is not { Length: 64 })
-            throw new InvalidDataException("msix.txt on GitHub is not valid.");
+            throw new InvalidDataException("The version information is not valid.");
         return new RemoteInfo(version!, hash.ToLowerInvariant(), text);
     }
 
@@ -204,8 +204,55 @@ internal static class Installer
         catch { return null; }
     }
 
-    /// <summary>Downloads ASD.msix and checks it against the hash in msix.txt. Returns the file path.</summary>
+    /// <summary>The connection broke before the whole file arrived.</summary>
+    private sealed class ConnectionLostException() : Exception("The connection was lost.");
+
+    /// <summary>How many times the download reconnects after the connection is lost, before it gives up.</summary>
+    private const int MaxReconnects = 10;
+
+    private static bool IsConnectionProblem(Exception e) => e switch
+    {
+        ConnectionLostException => true,
+        HttpRequestException h => h.StatusCode is null || (int)h.StatusCode >= 500 || (int)h.StatusCode == 408 || (int)h.StatusCode == 429,
+        IOException => true,
+        OperationCanceledException => true,   // a stall (the caller's own cancel is excluded by the caller)
+        _ => false,
+    };
+
+    /// <summary>
+    /// Downloads ASD.msix and checks it against the hash in msix.txt. Returns the file path.
+    /// When the connection breaks, the progress turns to "unknown" (no percent) and the download reconnects up to 10 times,
+    /// each time continuing from the part already saved. If it never gets through, it throws and Setup shows the error page.
+    /// </summary>
     public static async Task<string> DownloadAsync(IProgress<(double Fraction, string Text)> progress, CancellationToken ct)
+    {
+        Directory.CreateDirectory(WorkDir);
+        var partFile = Path.Combine(WorkDir, "ASD.msix.part");
+        long PartSize() => File.Exists(partFile) ? new FileInfo(partFile).Length : 0;
+
+        int failures = 0;
+        long lastSize = PartSize();
+        while (true)
+        {
+            try
+            {
+                return await DownloadOnceAsync(progress, ct);
+            }
+            catch (Exception e) when (!ct.IsCancellationRequested && IsConnectionProblem(e))
+            {
+                var size = PartSize();
+                if (size > lastSize) { failures = 0; lastSize = size; }   // it moved forward before it broke: count again from zero
+                failures++;
+                Log($"connection problem ({failures} of {MaxReconnects}): {e.GetType().Name}: {e.Message}");
+                if (failures > MaxReconnects)
+                    throw new SetupException("ASD could not be downloaded. Check your internet connection, then try again.");
+                progress.Report((-1, $"Connection lost. Connecting again… ({failures} of {MaxReconnects})"));
+                await Task.Delay(TimeSpan.FromSeconds(3), ct);
+            }
+        }
+    }
+
+    private static async Task<string> DownloadOnceAsync(IProgress<(double Fraction, string Text)> progress, CancellationToken ct)
     {
         Directory.CreateDirectory(WorkDir);
         var target = Path.Combine(WorkDir, "ASD.msix");
@@ -214,13 +261,21 @@ internal static class Installer
         try
         {
             using var http = NewClient();
-            var info = await FetchRemoteAsync(http, ct);
+            RemoteInfo info;
+            using (var infoTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                infoTimeout.CancelAfter(TimeSpan.FromSeconds(30));   // no answer in 30 s counts as a lost connection
+                info = await FetchRemoteAsync(http, infoTimeout.Token);
+            }
 
             long have = File.Exists(part) ? new FileInfo(part).Length : 0;   // a download that was interrupted continues from here
             using (var request = new HttpRequestMessage(HttpMethod.Get, BaseUrl + "ASD.msix"))
             {
                 if (have > 0) request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(have, null);
-                using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+                using var headerTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                headerTimeout.CancelAfter(TimeSpan.FromSeconds(30));
+                using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token);
+                headerTimeout.CancelAfter(Timeout.InfiniteTimeSpan);
 
                 if (have > 0 && response.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable)
                 {
@@ -254,7 +309,7 @@ internal static class Installer
                             $"{Mb(done)} of {(total > 0 ? Mb(total) : "?")}  ·  {Mb((long)speed)}/s"));
                     }
                     if (total > 0 && done != total)
-                        throw new SetupException("The download stopped before it finished. Press Try again: it continues from where it stopped.");
+                        throw new ConnectionLostException();
                 }
             }
 
@@ -270,18 +325,9 @@ internal static class Installer
             File.Move(part, target, overwrite: true);
             return target;
         }
-        catch (HttpRequestException e)
-        {
-            throw new SetupException("ASD could not be downloaded from GitHub. Check your internet connection and try again.\n\n" + e.Message);
-        }
         catch (InvalidDataException e)
         {
             throw new SetupException(e.Message);
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            // the .part file stays: the next try continues from it
-            throw new SetupException("The download stalled. Check your internet connection and press Try again: it continues from where it stopped.");
         }
     }
 

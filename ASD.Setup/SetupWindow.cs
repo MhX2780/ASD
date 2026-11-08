@@ -34,7 +34,7 @@ public sealed class SetupWindow : Window
 
     private readonly CancellationTokenSource _cancel = new();
     private readonly Grid _root = new() { Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) };
-    private readonly Grid _frame = new() { Margin = new Thickness(32, 4, 32, 12) };
+    private readonly Grid _frame = new() { Margin = new Thickness(32, 8, 32, 28) };
     private readonly string _license = Installer.ReadText("LICENSE");
     private readonly byte[]? _certificate = Installer.ReadCertificate();
     private readonly bool _auto;   // --auto: the window does by itself what a person would click (for watching a test)
@@ -368,8 +368,8 @@ public sealed class SetupWindow : Window
         {
             latest = await Installer.TryLatestVersionAsync();
             line = latest != null
-                ? $"Latest version on GitHub: {latest}"
-                : "GitHub could not be reached right now. Check your internet connection, then press the button again.";
+                ? $"Latest version: {latest}"
+                : "No internet connection right now. Check it, then press the button again.";
         }
 
         if (installed != null)
@@ -591,7 +591,8 @@ public sealed class SetupWindow : Window
     {
         if (p.Fraction < 0)
         {
-            _bar.IsIndeterminate = true;
+            _bar.IsIndeterminate = true;   // no known progress (for example while the connection is lost)
+            _percent.Text = "";
         }
         else
         {
@@ -679,7 +680,7 @@ public sealed class SetupWindow : Window
         {
             SetStep(step, Mark.Failed);
             Installer.Log($"FAILED at step {step + 1} ({names[step]}): {e.Message}");
-            ShowError(e is SetupException ? e.Message : "Something unexpected happened.\n\n" + e.Message);
+            ShowError(e is SetupException ? e.Message : "Something went wrong.\n\n" + e.Message);
         }
         finally
         {
@@ -722,6 +723,13 @@ public sealed class SetupWindow : Window
         if (_auto) _ = AutoDoneAsync();
     }
 
+    /// <summary>The text of an error page without web addresses or the name of the download site.</summary>
+    private static string Clean(string text)
+    {
+        var noLinks = System.Text.RegularExpressions.Regex.Replace(text, @"https?://\S+", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return noLinks.Replace("GitHub", "the server", StringComparison.OrdinalIgnoreCase).Trim();
+    }
+
     private void ShowError(string message, bool fatal = false)
     {
         var title = _mode switch
@@ -731,8 +739,8 @@ public sealed class SetupWindow : Window
             Mode.Repair => "ASD was not repaired",
             _ => "ASD was not installed",
         };
-        var header = Header(title, "Nothing was changed", Nav(1, Verb(_mode)));
-        var text = new TextBlock { Text = message, FontSize = 14, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
+        var header = Header("Something went wrong", title, Nav(1, Verb(_mode)));
+        var text = new TextBlock { Text = Clean(message), FontSize = 14, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
 
         var close = MakeButton("Close", "CloseButton");
         close.Click += (_, _) => Close();

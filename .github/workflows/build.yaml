@@ -375,6 +375,12 @@ jobs:
         if ($LASTEXITCODE -ne 0) { throw "signtool failed on ASD-Setup.exe (exit code $LASTEXITCODE)" }
         Write-Host "ASD-Setup.exe: $([math]::Round((Get-Item $final).Length / 1MB, 1)) MB, signed"
 
+        # ASD-Setup.zip: the same self-contained, one-file installer inside a zip (browsers and chat apps often block a bare .exe)
+        $setupZip = Join-Path $env:RUNNER_TEMP 'release-files/ASD-Setup.zip'
+        Remove-Item $setupZip -Force -ErrorAction SilentlyContinue
+        Compress-Archive -Path $final -DestinationPath $setupZip -CompressionLevel Optimal
+        Write-Host "ASD-Setup.zip: $([math]::Round((Get-Item $setupZip).Length / 1MB, 1)) MB"
+
     - name: Add the files to the release "latest"
       if: steps.cert.outputs.have_cert == 'true' && steps.msix.outcome == 'success'
       shell: pwsh
