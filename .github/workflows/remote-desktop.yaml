@@ -33,6 +33,7 @@ jobs:
       with:
         authkey: ${{ secrets.TS_AUTHKEY }}
         hostname: asd-runner-${{ github.run_id }}
+        args: --accept-dns=false # تجاوز مشكلة DNS التي ظهرت في الصورة
 
     - name: Turn Remote Desktop on and Fix 0x204 Error
       shell: pwsh
@@ -53,7 +54,7 @@ jobs:
         New-NetFirewallRule -DisplayName 'Tailscale RDP 3389' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
 
         # 4. إعداد حساب المستخدم وكلمة المرور
-        $user = $env:USERNAME
+        $user = $env:USERNAME # سيكون runneradmin
         $securePassword = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
         
         # تعيين كلمة المرور وجعلها لا تنتهي صلاحيتها أبداً
@@ -62,9 +63,25 @@ jobs:
         # إضافة المستخدم لمجموعة الاتصال عن بعد لضمان الصلاحيات
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction SilentlyContinue
 
-        # 5. إعادة تشغيل خدمة الطرفية لتطبيق إعدادات NLA فوراً (خطوة حاسمة لحل 0x204)
+        # 5. [الحل الجذري لخطأ 0x204] فحص المنفذ 3389 وإنهاء أي عملية متعارضة
+        Write-Host "Checking for port 3389 conflicts..."
+        $conn = Get-NetTCPConnection -LocalPort 3389 -ErrorAction SilentlyContinue
+        if ($conn) {
+            $pids = $conn.OwningProcess | Select-Object -Unique
+            foreach ($processId in $pids) {
+                $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
+                if ($proc -and $proc.Name -ne 'svchost') { # svchost هو المسؤول عن TermService
+                    Write-Host "Port 3389 is occupied by $($proc.Name) (PID: $processId). Killing it..."
+                    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        # 6. إعادة تشغيل خدمات RDP لتطبيق كل الإعدادات فوراً
+        Write-Host "Restarting Remote Desktop services..."
         Set-Service -Name TermService -StartupType Automatic
-        Restart-Service -Name TermService -Force
+        Restart-Service -Name TermService -Force -ErrorAction SilentlyContinue
+        Restart-Service -Name UmRdpService -Force -ErrorAction SilentlyContinue
 
         Write-Host "Remote Desktop is on and configured. Sign in as: $user"
         "RDP_USER=$user" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
@@ -122,12 +139,12 @@ jobs:
           '',
           "- Device in the Tailscale app: **$name**",
           "- PC name in Windows App: **$ip**",
-          "- User account: **$env:RDP_USER** (password = the secret RDP_PASSWORD)",
+          "- User account: **runneradmin** (password = the secret RDP_PASSWORD)", 
           "- Stops after $minutes minutes, or after $idleMax minutes with nobody connected. To stop now: cancel this run, or create the file C:\stop.txt on the machine."
         )
         $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
         Write-Host '=========================================='
-        Write-Host "READY  PC name: $ip   User: $env:RDP_USER   Device: $name"
+        Write-Host "READY  PC name: $ip   User: runneradmin   Device: $name"
         Write-Host '=========================================='
 
         Write-Host '--- tailscale netcheck (nearest relay servers and their delay) ---'
