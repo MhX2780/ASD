@@ -49,21 +49,27 @@ jobs:
         authkey: ${{ secrets.TS_AUTHKEY }}
         hostname: asd-runner-${{ github.run_id }}
 
-    - name: Turn Remote Desktop on
+        - name: Turn Remote Desktop on
       shell: pwsh
       env:
         RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
       run: |-
         $ErrorActionPreference = 'Stop'
 
-        # allow Remote Desktop and keep Network Level Authentication on
+        # 1. السماح بالاتصال عن بعد وتعطيل NLA (لتوافق أفضل مع تطبيقات الهواتف)
         Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
-        Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1
+        Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 0
+
+        # 2. حل مشكلة قيود الصلاحيات للحساب المحلي (runneradmin) على Windows Server
+        New-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Force | Out-Null
+        New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name LocalAccountTokenFilterPolicy -Value 1 -PropertyType DWord -Force | Out-Null
+
+        # 3. تشغيل خدمة Remote Desktop وفتح جدار الحماية لكل النطاقات
         Set-Service -Name TermService -StartupType Automatic
         Start-Service -Name TermService
-        New-NetFirewallRule -DisplayName 'ASD RDP 3389' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Any | Out-Null
+        New-NetFirewallRule -DisplayName 'ASD RDP 3389' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Domain,Private,Public | Out-Null
 
-        # the account you will sign in with
+        # 4. تعيين كلمة المرور لحساب المستخدم
         $user = $env:USERNAME
         Set-LocalUser -Name $user -Password (ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force)
         Write-Host "Remote Desktop is on. Sign in as: $user"
