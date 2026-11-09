@@ -1,8 +1,15 @@
-name: Remote Desktop (Cloudflare Quick Tunnel)
+name: Remote Desktop (Tailscale or Cloudflare)
 
 on:
   workflow_dispatch:
     inputs:
+      method:
+        description: 'How to reach the machine (tailscale = from the phone with the Tailscale app)'
+        type: choice
+        default: 'tailscale'
+        options:
+        - tailscale
+        - cloudflare
       minutes:
         description: 'Keep the machine for at most this many minutes (5 - 330)'
         default: '60'
@@ -22,8 +29,11 @@ jobs:
       shell: pwsh
       env:
         RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        METHOD: ${{ inputs.method }}
       run: |-
         if (-not $env:RDP_PASSWORD -or $env:RDP_PASSWORD.Length -lt 12) { throw 'The secret RDP_PASSWORD is missing or shorter than 12 characters.' }
+        if ($env:METHOD -eq 'tailscale' -and -not $env:TS_AUTHKEY) { throw 'The secret TS_AUTHKEY is missing (Tailscale > Settings > Keys > Generate auth key: reusable + ephemeral).' }
         Write-Host 'Secrets found.'
 
     - name: Enable Remote Desktop (RDP)
@@ -33,87 +43,121 @@ jobs:
       run: |-
         $ErrorActionPreference = 'Stop'
 
-        # تفعيل RDP وتعطيل NLA لتسهيل الاتصال
+        # RDP on, without Network Level Authentication (the phone clients connect more easily)
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
-        
-        # إعداد جدار الحماية
+
+        # firewall: the Remote Desktop rules for every network profile (the Tailscale adapter counts as a new network)
         Set-NetFirewallRule -DisplayGroup "Remote Desktop" -Profile Any -Enabled True
 
-        # إعداد المستخدم وكلمة المرور
+        # the user and its password
         $user = $env:USERNAME
         $securePassword = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
         Set-LocalUser -Name $user -Password $securePassword -PasswordNeverExpires $true
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction SilentlyContinue
 
-        # إعادة تشغيل الخدمة
         Set-Service -Name TermService -StartupType Automatic
         Restart-Service -Name TermService -Force
 
         Write-Host "Remote Desktop is ON. User: $user"
         "RDP_USER=$user" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-    - name: Install cloudflared and Start Quick Tunnel
+    # ---------- Tailscale: the machine joins your tailnet; the phone reaches it by its 100.x address ----------
+    - name: Join the tailnet (Tailscale)
+      if: ${{ inputs.method == 'tailscale' }}
+      uses: tailscale/github-action@v4
+      with:
+        authkey: ${{ secrets.TS_AUTHKEY }}
+        hostname: asd-windows-${{ github.run_number }}
+
+    - name: Find the Tailscale address
+      if: ${{ inputs.method == 'tailscale' }}
       shell: pwsh
       run: |-
-        # تحميل أداة cloudflared
+        $ts = (Get-Command tailscale -ErrorAction SilentlyContinue).Source
+        if (-not $ts) { $ts = 'C:\Program Files\Tailscale\tailscale.exe' }
+        $ip = $null
+        for ($i = 0; $i -lt 30 -and -not $ip; $i++) {
+          $out = (& $ts ip -4 2>$null | Select-Object -First 1)
+          if ($out -match '^\d+\.\d+\.\d+\.\d+$') { $ip = $out } else { Start-Sleep -Seconds 2 }
+        }
+        & $ts status
+        if (-not $ip) { throw 'The machine did not get a Tailscale address. Check TS_AUTHKEY (it must be valid, reusable and not expired).' }
+        Write-Host "Tailscale address: $ip"
+        "ADDRESS=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        "HOSTNAME_TS=asd-windows-${{ github.run_number }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+    # ---------- Cloudflare quick tunnel (needs cloudflared on the PC that connects) ----------
+    - name: Install cloudflared and start the Quick Tunnel
+      if: ${{ inputs.method == 'cloudflare' }}
+      shell: pwsh
+      run: |-
         Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
-        
-        # تشغيل النفق في الخلفية (Quick Tunnel) وتوجيهه إلى منفذ RDP المحلي
         Write-Host "Starting Cloudflare Quick Tunnel to rdp://localhost:3389 ..."
         $proc = Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url rdp://localhost:3389 --no-autoupdate" -NoNewWindow -RedirectStandardError "tunnel_log.txt" -PassThru
-        
-        # الانتظار حتى يظهر رابط trycloudflare.com
+
         $url = $null
         for ($i = 0; $i -lt 30; $i++) {
             Start-Sleep -Seconds 2
             if (Test-Path "tunnel_log.txt") {
                 $content = Get-Content "tunnel_log.txt" -Raw
                 $match = [regex]::Match($content, 'https://[a-zA-Z0-9-]+\.trycloudflare\.com')
-                if ($match.Success) {
-                    $url = $match.Value
-                    break
-                }
+                if ($match.Success) { $url = $match.Value; break }
             }
         }
-        
         if ($url) {
             Write-Host "Tunnel URL: $url"
-            "TUNNEL_URL=$url" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            "ADDRESS=$url" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
         } else {
-            Write-Error "Failed to get Cloudflare Tunnel URL. Check tunnel_log.txt for details."
             Get-Content "tunnel_log.txt" -ErrorAction SilentlyContinue
+            throw "Failed to get the Cloudflare Tunnel URL."
         }
 
     - name: Keep the machine alive
       shell: pwsh
       env:
+        METHOD: ${{ inputs.method }}
         MINUTES: ${{ inputs.minutes }}
         IDLE_MINUTES: ${{ inputs.idle_minutes }}
         RDP_USER: ${{ env.RDP_USER }}
-        TUNNEL_URL: ${{ env.TUNNEL_URL }}
+        ADDRESS: ${{ env.ADDRESS }}
+        HOSTNAME_TS: ${{ env.HOSTNAME_TS }}
       run: |-
         $minutes = [int]$env:MINUTES;      if ($minutes -lt 5)  { $minutes = 5 };  if ($minutes -gt 330) { $minutes = 330 }
         $idleMax = [int]$env:IDLE_MINUTES; if ($idleMax -lt 2)  { $idleMax = 2 };  if ($idleMax -gt 120) { $idleMax = 120 }
 
-        $lines = @(
-          '## Remote Desktop is ready (Cloudflare Quick Tunnel)',
-          '',
-          "- **Tunnel URL (Hostname):** $env:TUNNEL_URL",
-          "- **User account:** $env:RDP_USER",
-          "- **Password:** (the secret RDP_PASSWORD)",
-          '',
-          '### How to connect from your PC:',
-          '1. Install cloudflared on your PC.',
-          '2. Run: cloudflared access rdp --hostname <TUNNEL_URL> --url rdp://localhost:13389',
-          '3. Open Remote Desktop and connect to: **localhost:13389**',
-          '',
-          "- Stops after $minutes minutes, or after $idleMax minutes with nobody connected."
-        )
+        if ($env:METHOD -eq 'tailscale') {
+          $lines = @(
+            '## Remote Desktop is ready (Tailscale)',
+            '',
+            "- **Address (PC name):** $env:ADDRESS  (or $env:HOSTNAME_TS)",
+            "- **User name:** $env:RDP_USER",
+            '- **Password:** the secret RDP_PASSWORD',
+            '',
+            '### From the phone:',
+            '1. Open the Tailscale app and turn it on (same account as the auth key).',
+            "2. Open Remote Desktop / Windows App, add a PC: $env:ADDRESS, user $env:RDP_USER, the password.",
+            '3. Connect.'
+          )
+        } else {
+          $lines = @(
+            '## Remote Desktop is ready (Cloudflare Quick Tunnel)',
+            '',
+            "- **Tunnel URL:** $env:ADDRESS",
+            "- **User name:** $env:RDP_USER",
+            '- **Password:** the secret RDP_PASSWORD',
+            '',
+            '### From a PC (cloudflared is needed there):',
+            "1. Run: cloudflared access rdp --hostname $env:ADDRESS --url rdp://localhost:13389",
+            '2. Open Remote Desktop and connect to: localhost:13389'
+          )
+        }
+        $lines += ''
+        $lines += "- Stops after $minutes minutes, or after $idleMax minutes with nobody connected."
         $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-        
+
         Write-Host "=========================================="
-        Write-Host "READY  Tunnel URL: $env:TUNNEL_URL"
+        Write-Host "READY  Address: $env:ADDRESS"
         Write-Host "User: $env:RDP_USER"
         Write-Host "=========================================="
 
