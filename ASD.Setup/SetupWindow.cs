@@ -378,7 +378,9 @@ public sealed class SetupWindow : Window
         string line;
         Version? latest = null;
         if (_local != null)
-            line = "Using the ASD.msix next to this installer (no download needed).";
+            line = Installer.IsInComponents(_local)
+                ? "Using ASD.msix from the Components folder (no download needed)."
+                : "Using the ASD.msix next to this installer (no download needed).";
         else
         {
             latest = await Installer.TryLatestVersionAsync();
@@ -666,7 +668,7 @@ public sealed class SetupWindow : Window
             string package;
             if (_local != null)
             {
-                Report((0.5, "Using the offline package (no download needed)."));
+                Report((0.5, "Using ASD.msix from the Components folder (no download needed)."));
                 package = _local;
             }
             else
@@ -731,7 +733,8 @@ public sealed class SetupWindow : Window
         var installed = Installer.FindInstalled();
         var title = _mode switch { Mode.Update => "ASD was updated", Mode.Repair => "ASD was repaired", _ => "ASD is ready" };
         var head = Header(title, installed != null ? $"Version {Installer.VersionOf(installed)}" : "Installed", nav);
-        var body = Text("You can find ASD in the Start menu. It keeps itself up to date: when a new version is out, ASD offers it and Windows installs it in one step.", 14);
+        var body = Text("You can find ASD in the Start menu. It keeps itself up to date: when a new version is out, ASD offers it and Windows installs it in one step."
+            + (Installer.ExtensionsInstalled > 0 ? $"\n\n{Installer.ExtensionsInstalled} extension(s) from the Components folder were installed." : ""), 14);
 
         var start = MakeButton("Start ASD", "StartButton", accent: true);
         start.Click += (_, _) =>
