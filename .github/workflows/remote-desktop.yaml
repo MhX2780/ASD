@@ -16,6 +16,10 @@ on:
       idle_minutes:
         description: 'Stop by itself after nobody was connected for this many minutes'
         default: '10'
+      put_setup:
+        description: 'Put ASD Setup (with ASD.msix and the extensions in Components) on the desktop'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -61,6 +65,36 @@ jobs:
 
         Write-Host "Remote Desktop is ON. User: $user"
         "RDP_USER=$user" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+    - name: Put ASD Setup on the desktop
+      if: ${{ inputs.put_setup }}
+      continue-on-error: true
+      shell: pwsh
+      run: |-
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        $dir = Join-Path $desktop 'ASD Setup'
+        New-Item -ItemType Directory -Force -Path (Join-Path $dir 'Components\Extensions') | Out-Null
+        $release = 'https://github.com/MhX2780/ASD/releases/download/latest/'
+
+        # the installer itself
+        Invoke-WebRequest -Uri ($release + 'ASD-Setup.zip') -OutFile 'ASD-Setup.zip'
+        Expand-Archive -Path 'ASD-Setup.zip' -DestinationPath $dir -Force
+
+        # Components: the offline ASD.msix and the extensions, so Setup installs without downloading ASD
+        try { Invoke-WebRequest -Uri ($release + 'ASD.msix') -OutFile (Join-Path $dir 'Components\ASD.msix') } catch { Write-Warning "ASD.msix: $($_.Exception.Message)" }
+        try { Invoke-WebRequest -Uri 'https://github.com/MhX2780/ASD-Extensions/releases/download/extensions/extensions.zip' -OutFile (Join-Path $dir 'Components\Extensions\extensions.zip') } catch { Write-Warning "extensions.zip: $($_.Exception.Message)" }
+
+        # a shortcut on the desktop
+        $exe = Get-ChildItem -Path $dir -Filter '*.exe' | Select-Object -First 1
+        if ($exe) {
+          $shell = New-Object -ComObject WScript.Shell
+          $link = $shell.CreateShortcut((Join-Path $desktop 'ASD Setup.lnk'))
+          $link.TargetPath = $exe.FullName
+          $link.WorkingDirectory = $dir
+          $link.Save()
+        }
+        Get-ChildItem -Path $dir -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
+        Write-Host "ASD Setup is on the desktop: $dir"
 
     # ---------- Tailscale: the machine joins your tailnet; the phone reaches it by its 100.x address ----------
     - name: Join the tailnet (Tailscale)
