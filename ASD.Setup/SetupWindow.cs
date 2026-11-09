@@ -29,6 +29,7 @@ public sealed class SetupWindow : Window
     private const int HeightSmall = 340;
     private const int HeightConfirm = 380;
     private const int HeightError = 440;
+    private const int HeightExtensions = 560;
 
     private enum Mode { Install, Update, Repair, Uninstall }
 
@@ -64,6 +65,8 @@ public sealed class SetupWindow : Window
     private bool _ready;
     private bool _placed;
     private string? _local;   // ASD.msix next to this installer
+    private List<Installer.BundledExtension> _bundled = new();   // the extensions found in the Components folder
+    private static bool _extSteps;                                // the Extensions step exists: Welcome > Install > Extensions > Done
 
     private static string[] StepNames(Mode mode) => mode switch
     {
@@ -301,7 +304,9 @@ public sealed class SetupWindow : Window
     /// <summary>Where you are: Welcome > Install (or Update, Repair, Uninstall) > Done. The step you are on is bold, finished ones have a check mark.</summary>
     private static FrameworkElement Nav(int current, string middle)
     {
-        var labels = new[] { "Welcome", middle, "Done" };
+        var labels = _extSteps && middle != "Uninstall"
+            ? new[] { "Welcome", middle, "Extensions", "Done" }
+            : new[] { "Welcome", middle, "Done" };
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 0, 0, 16) };
         for (int i = 0; i < labels.Length; i++)
         {
@@ -373,6 +378,8 @@ public sealed class SetupWindow : Window
         _ready = false;
         var installed = await Task.Run(Installer.FindInstalled);
         _local = Installer.LocalPackage();
+        _bundled = await Task.Run(Installer.FindBundledExtensions);
+        _extSteps = _bundled.Count > 0;
         ShowWelcome(installed);
 
         string line;
@@ -693,7 +700,8 @@ public sealed class SetupWindow : Window
             SetStep(1, Mark.Done);
 
             Installer.Log("install finished");
-            ShowDone(false);
+            if (_extSteps) ShowExtensions();   // Welcome > Install > Extensions > Done
+            else ShowDone(false);
         }
         catch (OperationCanceledException)
         {
@@ -713,9 +721,103 @@ public sealed class SetupWindow : Window
 
     // ───────── 3. done / 4. error ─────────
 
+    // ───────── 2b. extensions: choose what to install from the Components folder, or skip ─────────
+
+    private void ShowExtensions()
+    {
+        var header = Header("Extensions", "Add extra tools to ASD", Nav(2, Verb(_mode)));
+
+        var list = Stack(8);
+        var boxes = new List<(CheckBox Box, Installer.BundledExtension Item)>();
+        foreach (var item in _bundled)
+        {
+            var text = new StackPanel { Spacing = 1 };
+            text.Children.Add(Text(item.Version.Length > 0 ? $"{item.Name}  ·  {item.Version}" : item.Name, 14, bold: true));
+            if (item.Description.Length > 0) text.Children.Add(Text(item.Description, 12, dim: true));
+            var box = new CheckBox { Content = text, IsChecked = true, MinWidth = 0 };
+            AutomationProperties.SetAutomationId(box, "Extension_" + item.Id);
+            boxes.Add((box, item));
+            list.Children.Add(box);
+        }
+
+        var all = new HyperlinkButton { Content = "Select all", Padding = new Thickness(0) };
+        var none = new HyperlinkButton { Content = "Select none", Padding = new Thickness(0) };
+        var links = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16 };
+        links.Children.Add(all);
+        links.Children.Add(none);
+
+        var panel = Stack(10);
+        panel.Children.Add(Text("Choose the extensions to install now. You can add them later from Extensions inside ASD.", 13, dim: true));
+        panel.Children.Add(links);
+        panel.Children.Add(new ScrollViewer { Content = list, Height = 200, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(0, 0, 12, 0) });
+
+        var skip = MakeButton("Skip", "SkipButton");
+        var install = MakeButton("Install", "InstallExtensionsButton", accent: true);
+        void Refresh() => install.IsEnabled = boxes.Any(b => b.Box.IsChecked == true);
+        foreach (var (box, _) in boxes)
+        {
+            box.Checked += (_, _) => Refresh();
+            box.Unchecked += (_, _) => Refresh();
+        }
+        all.Click += (_, _) => { foreach (var (box, _) in boxes) box.IsChecked = true; };
+        none.Click += (_, _) => { foreach (var (box, _) in boxes) box.IsChecked = false; };
+        skip.Click += (_, _) => { Installer.Log("the extensions step was skipped"); ShowDone(false); };
+        install.Click += async (_, _) => await InstallExtensionsAsync(boxes.Where(b => b.Box.IsChecked == true).Select(b => b.Item).ToList());
+
+        Show(Page(header, panel, skip, install), HeightExtensions);
+        if (_auto) _ = AutoExtensionsAsync();
+    }
+
+    private async Task AutoExtensionsAsync()
+    {
+        await Task.Delay(2500);
+        await InstallExtensionsAsync(_bundled.ToList());
+    }
+
+    private async Task InstallExtensionsAsync(List<Installer.BundledExtension> items)
+    {
+        if (_working || items.Count == 0) return;
+        _working = true;
+        try
+        {
+            var header = Header("Installing Extensions", "Please wait", Nav(2, Verb(_mode)));
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            row.Children.Add(new FontIcon { Glyph = "", FontSize = 14, Width = 22, VerticalAlignment = VerticalAlignment.Center });
+            row.Children.Add(Text("Installing Extensions", 15, bold: true));
+            var bar = new ProgressBar { Minimum = 0, Maximum = 100, Value = 0, Margin = new Thickness(0, 8, 0, 0) };
+            var detail = Text("", 12, dim: true);
+            var percent = Text("0%", 12, dim: true);
+            var panel = Stack(14);
+            panel.Children.Add(row);
+            panel.Children.Add(bar);
+            panel.Children.Add(detail);
+            panel.Children.Add(percent);
+            Show(Page(header, panel), HeightSmall);
+
+            var progress = new Progress<(double Fraction, string Text)>(p =>
+            {
+                bar.Value = Math.Clamp(p.Fraction, 0, 1) * 100;
+                percent.Text = $"{bar.Value:0}%";
+                detail.Text = p.Text;
+            });
+            Installer.Log($"installing {items.Count} extension(s) from the Components folder");
+            await Task.Run(() => Installer.InstallBundled(items, progress));
+            await Task.Delay(400);   // so the full bar is seen
+        }
+        catch (Exception e)
+        {
+            Installer.Log("FAILED installing the extensions: " + e.Message);
+        }
+        finally
+        {
+            _working = false;
+        }
+        ShowDone(false);
+    }
+
     private void ShowDone(bool dataDeleted)
     {
-        var nav = Nav(2, Verb(_mode));
+        var nav = Nav(_extSteps && _mode != Mode.Uninstall ? 3 : 2, Verb(_mode));
         var close = MakeButton("Close", "CloseButton");
         close.Click += (_, _) => Close();
 
@@ -734,7 +836,8 @@ public sealed class SetupWindow : Window
         var title = _mode switch { Mode.Update => "ASD was updated", Mode.Repair => "ASD was repaired", _ => "ASD is ready" };
         var head = Header(title, installed != null ? $"Version {Installer.VersionOf(installed)}" : "Installed", nav);
         var body = Text("You can find ASD in the Start menu. It keeps itself up to date: when a new version is out, ASD offers it and Windows installs it in one step."
-            + (Installer.ExtensionsInstalled > 0 ? $"\n\n{Installer.ExtensionsInstalled} extension(s) from the Components folder were installed." : ""), 14);
+            + (Installer.ExtensionsInstalled > 0 ? $"\n\n{Installer.ExtensionsInstalled} extension(s) were installed." : "")
+            + (Installer.ExtensionsFailed > 0 ? $"\n\n{Installer.ExtensionsFailed} extension(s) could not be installed (see the log)." : ""), 14);
 
         var start = MakeButton("Start ASD", "StartButton", accent: true);
         start.Click += (_, _) =>

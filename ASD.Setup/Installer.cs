@@ -91,9 +91,9 @@ internal static class Installer
     /// <summary>The Extensions folder to use: Components\Extensions (or Extensions next to the installer). It may hold one folder per extension, or an extensions.zip that is unpacked first.</summary>
     private static string? ExtensionsSource()
     {
-        foreach (var folder in ComponentFolders())
+        foreach (var (folder, name) in ComponentFolders().SelectMany(f => new[] { "Extensions", "Libs" }.Select(n => (f, n))))
         {
-            var dir = Path.Combine(folder, "Extensions");
+            var dir = Path.Combine(folder, name);
             if (!Directory.Exists(dir)) continue;
             bool hasFolders = Directory.GetDirectories(dir).Any(d => File.Exists(Path.Combine(d, "extension.json")));
             if (hasFolders || File.Exists(Path.Combine(dir, "extensions.txt"))) return dir;
@@ -115,15 +115,18 @@ internal static class Installer
     }
 
     /// <summary>Installs every extension folder found in <paramref name="source"/> into ASD's installed-extensions folder (a newer or equal installed copy is kept).</summary>
-    private static void InstallExtensionsFrom(string source)
+    internal static void InstallExtensionsFrom(string source, ISet<string>? only = null, IProgress<(double Fraction, string Text)>? progress = null)
     {
         var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ASD", "extensions", "installed");
-        int count = 0;
+        int count = 0, failed = 0, handled = 0;
+        var total = Math.Max(1, only?.Count ?? Directory.GetDirectories(source).Length);
         foreach (var dir in Directory.GetDirectories(source))
         {
             var manifest = Path.Combine(dir, "extension.json");
             if (!File.Exists(manifest)) continue;
             var id = Path.GetFileName(dir);
+            if (only != null && !only.Contains(id)) continue;
+            progress?.Report((handled++ / (double)total, "Installing " + id + "…"));
             try
             {
                 var target = Path.Combine(root, id);
@@ -144,24 +147,74 @@ internal static class Installer
                 count++;
                 Log($"extension {id} installed ({offered?.ToString() ?? "?"})");
             }
-            catch (Exception e) { Log($"could not install the extension {id}: {e.Message}"); }
+            catch (Exception e) { failed++; Log($"could not install the extension {id}: {e.Message}"); }
         }
+        progress?.Report((1, "Done."));
         ExtensionsInstalled = count;
+        ExtensionsFailed = failed;
+    }
+
+    /// <summary>How many extensions could not be installed by the last install.</summary>
+    public static int ExtensionsFailed { get; private set; }
+
+    /// <summary>One extension found in the Components folder.</summary>
+    internal sealed record BundledExtension(string Id, string Name, string Version, string Description, string Dir);
+
+    /// <summary>The extensions in Components\Extensions (name, version, description from each extension.json), for the Extensions step.</summary>
+    internal static List<BundledExtension> FindBundledExtensions()
+    {
+        var list = new List<BundledExtension>();
+        try
+        {
+            var source = ExtensionsSource();
+            if (source == null) return list;
+            foreach (var dir in Directory.GetDirectories(source).OrderBy(d => d, StringComparer.OrdinalIgnoreCase))
+            {
+                var manifest = Path.Combine(dir, "extension.json");
+                if (!File.Exists(manifest)) continue;
+                string name = "", version = "", description = "";
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(manifest));
+                    string S(string n) => doc.RootElement.TryGetProperty(n, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String ? v.GetString() ?? "" : "";
+                    name = S("name");
+                    version = S("version");
+                    description = S("description");
+                }
+                catch { /* a damaged manifest: the folder name is shown */ }
+                var id = Path.GetFileName(dir);
+                list.Add(new BundledExtension(id, name.Length > 0 ? name : id, version, description, dir));
+            }
+        }
+        catch (Exception e) { Log("could not read the extensions in Components: " + e.Message); }
+        return list;
+    }
+
+    /// <summary>Installs the chosen extensions (all of them came from the same folder).</summary>
+    internal static void InstallBundled(IReadOnlyList<BundledExtension> items, IProgress<(double Fraction, string Text)>? progress = null)
+    {
+        if (items.Count == 0) return;
+        var chosen = items.Select(i => i.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        InstallExtensionsFrom(Path.GetDirectoryName(items[0].Dir)!, chosen, progress);
+    }
+
+    /// <summary>Installs every extension found in Components (silent mode: nobody chooses).</summary>
+    public static void InstallAllBundled()
+    {
+        var source = ExtensionsSource();
+        if (source != null) InstallExtensionsFrom(source);
     }
 
     /// <summary>
-    /// The Extensions\ folder inside Components\ (one folder per extension, optionally with extensions.txt, or an extensions.zip):
-    /// every extension is installed into ASD, and the list is also copied to %LocalAppData%\ASD\extensions-offline, where the
-    /// installed ASD's store looks for it.
+    /// The Extensions\ folder inside Components\ (one folder per extension, with extensions.txt) is copied to
+    /// %LocalAppData%\ASD\extensions-offline, where the installed ASD's store looks for it (so any of them can be installed later, offline).
     /// </summary>
     public static int CopyOfflineExtensions()
     {
         try
         {
             var source = ExtensionsSource();
-            if (source == null) return 0;
-            InstallExtensionsFrom(source);   // the extensions themselves are installed right away
-            if (!File.Exists(Path.Combine(source, "extensions.txt"))) return ExtensionsInstalled;   // (the list for the store is copied only when there is one)
+            if (source == null || !File.Exists(Path.Combine(source, "extensions.txt"))) return 0;   // the list for the store is copied only when there is one
 
             var target = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ASD", "extensions-offline");
             if (Directory.Exists(target)) Directory.Delete(target, recursive: true);

@@ -29,6 +29,7 @@ internal static class Silent
             Installer.Log($"installed: ASD {Installer.VersionOf(installed)}");
 
             Installer.CopyOfflineExtensions();
+            Installer.InstallAllBundled();
             Installer.RegisterFileType();
 
             if (start) Installer.Launch();
