@@ -158,7 +158,9 @@ internal static class Installer
     public static int ExtensionsFailed { get; private set; }
 
     /// <summary>One extension found in the Components folder.</summary>
-    internal sealed record BundledExtension(string Id, string Name, string Version, string Description, string Dir);
+    /// <param name="Dir">the folder in Components (empty when the extension has to be downloaded)</param>
+    /// <param name="Remote">true = it comes from the server (newer than Components, or not in Components at all)</param>
+    internal sealed record BundledExtension(string Id, string Name, string Version, string Description, string Dir, bool Remote = false, string Note = "");
 
     /// <summary>The extensions in Components\Extensions (name, version, description from each extension.json), for the Extensions step.</summary>
     internal static List<BundledExtension> FindBundledExtensions()
@@ -190,19 +192,198 @@ internal static class Installer
         return list;
     }
 
-    /// <summary>Installs the chosen extensions (all of them came from the same folder).</summary>
+    /// <summary>Installs extensions whose folders are on this PC (each item has its own folder).</summary>
     internal static void InstallBundled(IReadOnlyList<BundledExtension> items, IProgress<(double Fraction, string Text)>? progress = null)
     {
-        if (items.Count == 0) return;
-        var chosen = items.Select(i => i.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        InstallExtensionsFrom(Path.GetDirectoryName(items[0].Dir)!, chosen, progress);
+        int installed = 0, failed = 0;
+        for (var i = 0; i < items.Count; i++)
+        {
+            var item = items[i];
+            progress?.Report((i / (double)Math.Max(1, items.Count), "Installing " + item.Name + "…"));
+            if (item.Dir.Length == 0 || !Directory.Exists(item.Dir))
+            {
+                failed++;
+                Log($"extension {item.Id}: its folder was not found");
+                continue;
+            }
+            InstallExtensionsFrom(Path.GetDirectoryName(item.Dir)!, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { item.Id }, null);
+            installed += ExtensionsInstalled;
+            failed += ExtensionsFailed;
+        }
+        progress?.Report((1, "Done."));
+        ExtensionsInstalled = installed;
+        ExtensionsFailed = failed;
     }
 
-    /// <summary>Installs every extension found in Components (silent mode: nobody chooses).</summary>
-    public static void InstallAllBundled()
+    // ───────── the extensions on the server (ASD-Extensions) ─────────
+
+    public const string ExtensionsListUrl = "https://github.com/MhX2780/ASD-Extensions/releases/download/extensions/extensions.txt";
+    public const string ExtensionsZipUrl = "https://github.com/MhX2780/ASD-Extensions/releases/download/extensions/extensions.zip";
+
+    /// <summary>Note of an extension that is on the server but not in Components.</summary>
+    internal const string ServerOnlyNote = "From the server";
+
+    private static string _remoteHash = "";   // SHA-256 of extensions.zip, the first line of extensions.txt
+
+    private static string InstalledExtensionsRoot()
+        => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ASD", "extensions", "installed");
+
+    private static bool IsNewerVersion(string offered, string have)
     {
-        var source = ExtensionsSource();
-        if (source != null) InstallExtensionsFrom(source);
+        if (!System.Version.TryParse(offered, out var o)) return false;
+        return !System.Version.TryParse(have, out var h) || o > h;
+    }
+
+    private static async Task<List<(string Id, string Version, string Name, string Description)>?> TryReadRemoteListAsync()
+    {
+        try
+        {
+            using var http = NewClient();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+            var text = await http.GetStringAsync(ExtensionsListUrl, cts.Token);
+            var rows = text.Replace("\r", "").Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            if (rows.Length == 0 || rows[0].Trim().Length != 64) return null;
+            _remoteHash = rows[0].Trim().ToLowerInvariant();
+            var list = new List<(string Id, string Version, string Name, string Description)>();
+            foreach (var row in rows.Skip(1))
+            {
+                var p = row.Split('|').Select(s => s.Trim()).ToArray();
+                if (p.Length >= 3 && p[0].Length > 0) list.Add((p[0], p[1], p[2], p.Length > 3 ? p[3] : ""));
+            }
+            return list;
+        }
+        catch (Exception e)
+        {
+            Log("the extensions list on the server could not be read: " + e.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// What the Extensions step offers: the extensions in Components, compared with the list on the server. A newer version on the server
+    /// replaces the one in Components (it is downloaded when chosen); extensions that are only on the server are offered too.
+    /// Extensions that are already installed in the same or a newer version are left out. Offline: only what is in Components.
+    /// </summary>
+    internal static async Task<List<BundledExtension>> FindExtensionsAsync()
+    {
+        List<BundledExtension> merged;
+        try { merged = await Task.Run(FindBundledExtensions); }
+        catch { merged = new List<BundledExtension>(); }
+
+        try
+        {
+            var remote = await TryReadRemoteListAsync();
+            if (remote != null)
+            {
+                var local = merged.ToDictionary(e => e.Id, StringComparer.OrdinalIgnoreCase);
+                var result = new List<BundledExtension>();
+                foreach (var r in remote)
+                {
+                    if (!local.Remove(r.Id, out var l))
+                        result.Add(new BundledExtension(r.Id, r.Name.Length > 0 ? r.Name : r.Id, r.Version, r.Description, "", true, ServerOnlyNote));
+                    else if (IsNewerVersion(r.Version, l.Version))
+                        result.Add(l with
+                        {
+                            Name = r.Name.Length > 0 ? r.Name : l.Name,
+                            Version = r.Version,
+                            Description = r.Description.Length > 0 ? r.Description : l.Description,
+                            Dir = "",
+                            Remote = true,
+                            Note = $"Newer than the one in Components ({l.Version})",
+                        });
+                    else result.Add(l);
+                }
+                result.AddRange(local.Values);   // in Components but not in the server's list
+                merged = result;
+            }
+        }
+        catch (Exception e) { Log("could not compare the extensions with the server: " + e.Message); }
+
+        var root = InstalledExtensionsRoot();
+        return merged
+            .Where(e =>
+            {
+                var have = ReadExtensionVersion(Path.Combine(root, e.Id, "extension.json"));
+                return have == null || !System.Version.TryParse(e.Version, out var offered) || offered > have;
+            })
+            .OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>Downloads extensions.zip from the server, checks it against the hash of the list and unpacks it. Returns the folder with one folder per extension.</summary>
+    private static async Task<string> DownloadRemoteExtensionsAsync(IProgress<(double Fraction, string Text)> progress, CancellationToken ct)
+    {
+        if (_remoteHash.Length != 64) throw new SetupException("The extensions list from the server is not valid.");
+        Directory.CreateDirectory(WorkDir);
+        var zip = Path.Combine(WorkDir, "extensions.zip");
+
+        using (var http = NewClient())
+        using (var response = await http.GetAsync(ExtensionsZipUrl, HttpCompletionOption.ResponseHeadersRead, ct))
+        {
+            response.EnsureSuccessStatusCode();
+            var total = response.Content.Headers.ContentLength ?? 0;
+            await using var source = await response.Content.ReadAsStreamAsync(ct);
+            await using var file = new FileStream(zip, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+            var buffer = new byte[81920];
+            long done = 0;
+            int read;
+            while ((read = await source.ReadAsync(buffer, ct)) > 0)
+            {
+                await file.WriteAsync(buffer.AsMemory(0, read), ct);
+                done += read;
+                progress.Report((total > 0 ? (double)done / total : -1, $"Downloading the extensions: {Mb(done)} of {(total > 0 ? Mb(total) : "?")}"));
+            }
+        }
+
+        string actual;
+        await using (var check = new FileStream(zip, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true))
+            actual = Convert.ToHexString(await SHA256.HashDataAsync(check, ct)).ToLowerInvariant();
+        if (actual != _remoteHash)
+        {
+            try { File.Delete(zip); } catch { }
+            throw new SetupException("The downloaded extensions are damaged or incomplete.");
+        }
+
+        var folder = Path.Combine(WorkDir, "extensions-remote");
+        await Task.Run(() =>
+        {
+            if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true);
+            System.IO.Compression.ZipFile.ExtractToDirectory(zip, folder, overwriteFiles: true);
+        }, ct);
+        return folder;
+    }
+
+    /// <summary>Installs the chosen extensions: the ones from the server are downloaded first (70 % of the bar), then everything is copied into ASD.</summary>
+    internal static async Task InstallChosenAsync(IReadOnlyList<BundledExtension> items, IProgress<(double Fraction, string Text)> progress, CancellationToken ct)
+    {
+        var ready = items.ToList();
+        int remoteFailed = 0;
+        if (ready.Any(i => i.Remote))
+        {
+            try
+            {
+                var folder = await DownloadRemoteExtensionsAsync(new Progress<(double Fraction, string Text)>(p => progress.Report((p.Fraction < 0 ? -1 : p.Fraction * 0.7, p.Text))), ct);
+                for (var i = 0; i < ready.Count; i++)
+                    if (ready[i].Remote) ready[i] = ready[i] with { Dir = Path.Combine(folder, ready[i].Id), Remote = false };
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception e)
+            {
+                Log("the extensions could not be downloaded: " + e.Message);
+                remoteFailed = ready.Count(i => i.Remote);
+                ready.RemoveAll(i => i.Remote);   // the ones in Components are still installed
+            }
+        }
+
+        await Task.Run(() => InstallBundled(ready, new Progress<(double Fraction, string Text)>(p => progress.Report((0.7 + p.Fraction * 0.3, p.Text)))), ct);
+        ExtensionsFailed += remoteFailed;
+    }
+
+    /// <summary>Silent mode (nobody chooses): what is in Components, in its newest version; not the extensions that exist only on the server.</summary>
+    public static async Task InstallAllBundledAsync()
+    {
+        var items = (await FindExtensionsAsync()).Where(i => !(i.Remote && i.Note == ServerOnlyNote)).ToList();
+        await InstallChosenAsync(items, new Progress<(double Fraction, string Text)>(_ => { }), CancellationToken.None);
     }
 
     /// <summary>

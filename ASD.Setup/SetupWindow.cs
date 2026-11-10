@@ -376,9 +376,10 @@ public sealed class SetupWindow : Window
         }
 
         _ready = false;
+        var extensionsTask = Installer.FindExtensionsAsync();   // Components compared with the server, at the same time
         var installed = await Task.Run(Installer.FindInstalled);
         _local = Installer.LocalPackage();
-        _bundled = await Task.Run(Installer.FindBundledExtensions);
+        _bundled = await extensionsTask;
         _extSteps = _bundled.Count > 0;
         ShowWelcome(installed);
 
@@ -734,7 +735,9 @@ public sealed class SetupWindow : Window
             var text = new StackPanel { Spacing = 1 };
             text.Children.Add(Text(item.Version.Length > 0 ? $"{item.Name}  ·  {item.Version}" : item.Name, 14, bold: true));
             if (item.Description.Length > 0) text.Children.Add(Text(item.Description, 12, dim: true));
-            var box = new CheckBox { Content = text, IsChecked = true, MinWidth = 0 };
+            if (item.Note.Length > 0) text.Children.Add(Text(item.Note, 12, dim: true));
+            // what is in Components (or newer than it) is ticked; an extension that exists only on the server is the person's choice
+            var box = new CheckBox { Content = text, IsChecked = !(item.Remote && item.Note == Installer.ServerOnlyNote), MinWidth = 0 };
             AutomationProperties.SetAutomationId(box, "Extension_" + item.Id);
             boxes.Add((box, item));
             list.Children.Add(box);
@@ -759,6 +762,7 @@ public sealed class SetupWindow : Window
             box.Checked += (_, _) => Refresh();
             box.Unchecked += (_, _) => Refresh();
         }
+        Refresh();
         all.Click += (_, _) => { foreach (var (box, _) in boxes) box.IsChecked = true; };
         none.Click += (_, _) => { foreach (var (box, _) in boxes) box.IsChecked = false; };
         skip.Click += (_, _) => { Installer.Log("the extensions step was skipped"); ShowDone(false); };
@@ -796,12 +800,13 @@ public sealed class SetupWindow : Window
 
             var progress = new Progress<(double Fraction, string Text)>(p =>
             {
+                bar.IsIndeterminate = p.Fraction < 0;
                 bar.Value = Math.Clamp(p.Fraction, 0, 1) * 100;
-                percent.Text = $"{bar.Value:0}%";
+                percent.Text = p.Fraction < 0 ? "" : $"{bar.Value:0}%";
                 detail.Text = p.Text;
             });
             Installer.Log($"installing {items.Count} extension(s) from the Components folder");
-            await Task.Run(() => Installer.InstallBundled(items, progress));
+            await Installer.InstallChosenAsync(items, progress, _cancel.Token);
             await Task.Delay(400);   // so the full bar is seen
         }
         catch (Exception e)
