@@ -92,6 +92,7 @@ internal static class Loc
         _loaded = true;
         try
         {
+            LoadEmbedded();   // texts inside the program itself (ASD Setup is one single exe)
             LoadFolder(Path.Combine(AppContext.BaseDirectory, "Assets", "Lang"));
             LoadFolder(Path.Combine(AppPaths.DataDir, "lang"));   // yours: adds to / overrides the built-in texts
         }
@@ -120,12 +121,34 @@ internal static class Loc
             LoadFile(file);
     }
 
-    private static void LoadFile(string path)
+    private static void LoadFile(string path) => LoadLines(File.ReadLines(path, Encoding.UTF8));
+
+    private static void LoadEmbedded()
+    {
+        try
+        {
+            var assembly = typeof(Loc).Assembly;
+            foreach (var name in assembly.GetManifestResourceNames())
+            {
+                if (!name.EndsWith(".lang.txt", StringComparison.OrdinalIgnoreCase)) continue;
+                using var stream = assembly.GetManifestResourceStream(name);
+                if (stream == null) continue;
+                using var reader = new StreamReader(stream, Encoding.UTF8);
+                var lines = new List<string>();
+                string? text;
+                while ((text = reader.ReadLine()) != null) lines.Add(text);
+                LoadLines(lines);
+            }
+        }
+        catch { /* none inside */ }
+    }
+
+    private static void LoadLines(IEnumerable<string> lines)
     {
         try
         {
             string[]? codes = null;
-            foreach (var raw in File.ReadLines(path, Encoding.UTF8))
+            foreach (var raw in lines)
             {
                 var line = raw.TrimEnd('\r');
                 if (line.Length == 0 || line.StartsWith("//", StringComparison.Ordinal)) continue;
@@ -183,7 +206,7 @@ internal static class Loc
                 if (!kv.Key.Contains("{0}", StringComparison.Ordinal)) continue;
                 try
                 {
-                    var rx = "^" + Regex.Escape(kv.Key).Replace("\\{0}", "(.+?)") + "$";
+                    var rx = "^" + Regex.Replace(Regex.Escape(kv.Key), @"\\\{(\d)\}", g => "(?<g" + g.Groups[1].Value + ">.+?)") + "$";   // {0} {1} = a name or number that is kept
                     _patterns.Add((new Regex(rx, RegexOptions.CultureInvariant | RegexOptions.Singleline), kv.Value));
                 }
                 catch { /* a bad pattern is skipped */ }
@@ -198,11 +221,19 @@ internal static class Loc
         if (string.IsNullOrEmpty(s)) return s ?? "";
         if (_table == null) return s;
         if (_table.TryGetValue(s, out var hit)) return hit;
+        if (s.Contains('\n')) return string.Join("\n", s.Split('\n').Select(line => T(line)));   // a text of several lines: line by line
 
         foreach (var (rx, template) in _patterns)
         {
             var m = rx.Match(s);
-            if (m.Success) return template.Replace("{0}", T(m.Groups[1].Value));
+            if (!m.Success) continue;
+            var result = template;
+            for (var i = 0; i < 4; i++)
+            {
+                var part = m.Groups["g" + i];
+                if (part.Success) result = result.Replace("{" + i + "}", T(part.Value));
+            }
+            return result;
         }
 
         // "Search…" / "Name:" when only "Search" / "Name" is known

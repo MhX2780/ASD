@@ -88,6 +88,7 @@ public sealed class SetupWindow : Window
     {
         _auto = auto;
         Title = "ASD Setup";
+        Loc.Init();   // the saved language, or the Windows language when there is a translation of it
         try { SystemBackdrop = new MicaBackdrop(); } catch { /* an older Windows: plain background */ }
 
         var titleBar = new TitleBar
@@ -97,6 +98,7 @@ public sealed class SetupWindow : Window
             IsBackButtonVisible = false,
             IsPaneToggleButtonVisible = false,
         };
+        titleBar.Content = MakeLanguagePicker();   // the language box lives in the title bar, on every page
         var titleLogo = LoadLogo();
         if (titleLogo != null) titleBar.IconSource = new ImageIconSource { ImageSource = titleLogo };   // the ASD logo left of the title
         _root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -106,12 +108,32 @@ public sealed class SetupWindow : Window
         _root.Children.Add(titleBar);
         _root.Children.Add(_frame);
         Content = _root;
+        Loc.Track(_root, _frame);   // translates every view (and mirrors it for Arabic) after it is built
 
         SetupFrame(titleBar);
         Closed += (_, _) => _cancel.Cancel();
 
         ShowLoading();
         _ = PrepareAsync();
+    }
+
+    /// <summary>"System default" or a language. The choice is saved in ASD's settings, so ASD opens in the same language.</summary>
+    private ComboBox MakeLanguagePicker()
+    {
+        var combo = new ComboBox { MinWidth = 150, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+        AutomationProperties.SetAutomationId(combo, "LanguageBox");
+        ToolTipService.SetToolTip(combo, "Language");
+        combo.Items.Add(new ComboBoxItem { Content = Loc.T("System default"), Tag = "auto" });
+        foreach (var l in Loc.Available) combo.Items.Add(new ComboBoxItem { Content = l.Name, Tag = l.Code });
+        combo.SelectedIndex = 0;
+        var saved = Loc.Setting;
+        for (var i = 0; i < combo.Items.Count; i++)
+            if (combo.Items[i] is ComboBoxItem { Tag: string tag } && tag == saved) combo.SelectedIndex = i;
+        combo.SelectionChanged += (_, _) =>
+        {
+            if (combo.SelectedItem is ComboBoxItem { Tag: string code } && code != Loc.Setting) Loc.Set(code);
+        };
+        return combo;
     }
 
     // ───────── window frame (same approach as ASD's own windows) ─────────

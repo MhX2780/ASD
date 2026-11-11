@@ -44,6 +44,8 @@
     <EmbeddedResource Include="app.ico" LogicalName="app.ico" />
     <!-- the logo shown in the window (a sharp 256px picture; an .ico would give a blurry small frame) -->
     <EmbeddedResource Include="logo.png" LogicalName="logo.png" />
+    <!-- the texts of this installer in every language (Setup.lang.txt, same format as ASD's Assets\Lang\ASD.lang.txt) -->
+    <EmbeddedResource Include="Setup.lang.txt" LogicalName="Setup.lang.txt" />
     <!-- the license shown on the first page -->
     <EmbeddedResource Include="..\LICENSE" LogicalName="LICENSE" />
     <!-- the PUBLIC certificate of the package (CI copies it here from the signing secret): the only publisher this installer trusts -->
@@ -52,6 +54,12 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260508005" />
+    <!-- the language code is shared with ASD itself (one place for how texts are translated), and the saved choice is ASD's settings.json -->
+    <Compile Include="..\Core\Loc.cs" Link="Loc.cs" />
+    <Compile Include="..\Core\SettingsStore.cs" Link="SettingsStore.cs" />
+    <Compile Include="..\Core\AppPaths.cs" Link="AppPaths.cs" />
+    <Using Include="System.Text" />
+    <Using Include="System.Runtime.CompilerServices" />
   </ItemGroup>
 
 </Project>
