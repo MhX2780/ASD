@@ -48,6 +48,8 @@ public sealed partial class MainWindow : Window
 
         RootGrid.ActualThemeChanged += (_, _) => UpdateCaptionColors();
         ApplyTheme(LoadSavedTheme());
+        Loc.Init();                          // languages: the saved one, or the Windows language when ASD has it
+        Loc.Track(RootGrid, RootNav);        // keeps every page, dialog and menu translated (and mirrored for Arabic)
         // RootGrid (not RootNav) so the title bar is covered too, not just the navigation area.
         CursorHelper.Initialize(RootGrid, Path.Combine(AppContext.BaseDirectory, "Assets", "Cursors"));
         CursorHelper.HookWindowFrame(WinRT.Interop.WindowNative.GetWindowHandle(this));   // drag area + min/max/close
@@ -305,7 +307,7 @@ public sealed partial class MainWindow : Window
 
     private void FillSuggestions(string? query)
     {
-        _suggest = ToolRegistry.Search(query).Take(8).ToDictionary(t => $"{t.Title}   —   {t.Description}", t => t);
+        _suggest = ToolRegistry.Search(query).Take(8).ToDictionary(t => $"{Loc.T(t.Title)}   —   {Loc.T(t.Description)}", t => t);
         SearchBox.ItemsSource = _suggest.Keys.ToList();
     }
 

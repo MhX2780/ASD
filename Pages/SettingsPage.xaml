@@ -24,6 +24,8 @@
                 <RadioButton x:Name="LightThemeOption" Content="Light"/>
                 <RadioButton x:Name="DarkThemeOption" Content="Dark"/>
             </RadioButtons>
+            <TextBlock Text="Language" FontSize="16" FontWeight="SemiBold" Margin="0,12,0,0"/>
+            <ComboBox x:Name="LanguageCombo" MinWidth="220"/>
         </StackPanel>
 
         <StackPanel Grid.Row="2" Spacing="8">

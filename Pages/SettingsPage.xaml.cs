@@ -11,10 +11,27 @@ public sealed partial class SettingsPage : Page
     public SettingsPage()
     {
         this.InitializeComponent();
-        foreach (var s in SlowSeconds) SlowCombo.Items.Add(s == 1 ? "1 second" : $"{s} seconds");
-        foreach (var d in ExpiryDays) ExpiryCombo.Items.Add($"{d} days");
+        foreach (var s in SlowSeconds) SlowCombo.Items.Add(Loc.T(s == 1 ? "1 second" : $"{s} seconds"));
+        foreach (var d in ExpiryDays) ExpiryCombo.Items.Add(Loc.T($"{d} days"));
+        FillLanguages();
         LoadCurrentSelection();
         _isLoading = false;
+    }
+
+    /// <summary>The Language box: "System default" and every language that has a file (Assets\Lang, or %LocalAppData%\ASD\lang).</summary>
+    private void FillLanguages()
+    {
+        LanguageCombo.Items.Add(new ComboBoxItem { Content = "System default", Tag = "auto" });
+        foreach (var l in Loc.Available) LanguageCombo.Items.Add(new ComboBoxItem { Content = l.Name, Tag = l.Code });
+        var current = Loc.Setting;
+        LanguageCombo.SelectedIndex = 0;
+        for (var i = 0; i < LanguageCombo.Items.Count; i++)
+            if (LanguageCombo.Items[i] is ComboBoxItem { Tag: string tag } && tag == current) LanguageCombo.SelectedIndex = i;
+        LanguageCombo.SelectionChanged += (_, _) =>
+        {
+            if (_isLoading) return;
+            if (LanguageCombo.SelectedItem is ComboBoxItem { Tag: string code }) Loc.Set(code);
+        };
     }
 
     private void Page_Loaded(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)

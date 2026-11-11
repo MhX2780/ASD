@@ -52,6 +52,10 @@
     <Content Include="Assets\Cursors\**\*.cur">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <!-- language files (Settings > Language); more can be added in %LocalAppData%\ASD\lang -->
+    <Content Include="Assets\Lang\*.lang.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="Assets\Cursors\**\*.ani">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

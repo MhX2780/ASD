@@ -54,6 +54,7 @@ internal sealed class ExtensionWindow : Window
         _e = e; _all = all; _changed = changed;
         Title = e.Name;
         SystemBackdrop = new MicaBackdrop();
+        Loc.Track(_root);   // the language chosen in Settings
         AppWindow.Title = e.Name;
 
         _root.RequestedTheme = SettingsStore.Get("ThemeMode", "auto") switch

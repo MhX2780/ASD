@@ -172,7 +172,7 @@ public static class ToolRegistry
         }
         var terms = q.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         return pool
-            .Where(t => { var hay = $"{t.Title} {t.Description} {t.Keywords}".ToLowerInvariant(); return terms.All(hay.Contains); })
+            .Where(t => { var hay = $"{t.Title} {t.Description} {t.Keywords} {Loc.T(t.Title)} {Loc.T(t.Description)}".ToLowerInvariant(); return terms.All(hay.Contains); })
             .OrderBy(t => t.Title.ToLowerInvariant().StartsWith(terms[0]) ? 0 : 1);
     }
 }
