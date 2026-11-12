@@ -3,6 +3,7 @@
 
 ASD Setup || إعداد ASD || Installation d'ASD || Instalador de ASD || ASD-Setup || ASD Kurulumu || Установка ASD || ASD 安装程序 || ASD セットアップ || Instalador do ASD
 Language || اللغة || Langue || Idioma || Sprache || Dil || Язык || 语言 || 言語 || Idioma
+Auto || تلقائي || Auto || Automático || Automatisch || Otomatik || Авто || 自动 || 自動 || Automático
 System default || افتراضي النظام || Langue du système || Predeterminado del sistema || Systemstandard || Sistem varsayılanı || Как в системе || 系统默认 || システムの既定 || Padrão do sistema
 Getting ready || جارٍ التحضير || Préparation || Preparando || Vorbereitung || Hazırlanıyor || Подготовка || 准备中 || 準備中 || Preparando
 Looking at what is installed… || جارٍ فحص ما هو مثبّت… || Vérification de ce qui est installé… || Comprobando lo que está instalado… || Prüfe, was installiert ist… || Yüklü olanlar denetleniyor… || Проверка установленных компонентов… || 正在检查已安装的内容… || インストール済みの内容を確認しています… || Verificando o que está instalado…

@@ -812,7 +812,8 @@ internal static class Installer
         if (package == null) return;
 
         var manager = new PackageManager();
-        var operation = manager.RemovePackageAsync(package.Id.FullName, deleteData ? RemovalOptions.None : RemovalOptions.PreserveApplicationData);
+        // PreserveApplicationData only works for packages in development mode (error 0x80073CFA); ASD's data is in %LocalAppData%\ASD, outside the package, so it stays anyway
+        var operation = manager.RemovePackageAsync(package.Id.FullName, RemovalOptions.None);
         operation.Progress = (_, p) => progress.Report((p.percentage / 100.0, "Windows is removing ASD…"));
 
         var task = Task.Run(async () => await operation);

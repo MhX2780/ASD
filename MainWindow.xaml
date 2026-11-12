@@ -63,8 +63,8 @@
             <NavigationViewItem Content="Keys Store" Tag="keys" ToolTipService.ToolTip="Keys Store: encrypted vault for your API keys">
                 <NavigationViewItem.Icon><FontIcon Glyph="&#xE72E;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
-            <NavigationViewItem Content="Video Player" Tag="video" ToolTipService.ToolTip="Video Player: MP4, or MP4 + MP3, from a file or link">
-                <NavigationViewItem.Icon><FontIcon Glyph="&#xE714;" FontSize="16" /></NavigationViewItem.Icon>
+            <NavigationViewItem Content="Devices" Tag="devices" ToolTipService.ToolTip="Devices: pair your phone with ASD Connect (QR code)">
+                <NavigationViewItem.Icon><FontIcon Glyph="&#xE772;" FontSize="16" /></NavigationViewItem.Icon>
             </NavigationViewItem>
             <NavigationViewItem Content="Automation" Tag="automation" ToolTipService.ToolTip="Automation: cards joined by arrows that run commands, web requests and notifications">
                 <NavigationViewItem.Icon><FontIcon Glyph="&#xE768;" FontSize="16" /></NavigationViewItem.Icon>

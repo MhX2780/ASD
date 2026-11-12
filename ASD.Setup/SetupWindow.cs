@@ -98,7 +98,7 @@ public sealed class SetupWindow : Window
             IsBackButtonVisible = false,
             IsPaneToggleButtonVisible = false,
         };
-        titleBar.Content = MakeLanguagePicker();   // the language box lives in the title bar, on every page
+        // (the language box is on the Welcome page: the title bar is too narrow for it at the default window size)
         var titleLogo = LoadLogo();
         if (titleLogo != null) titleBar.IconSource = new ImageIconSource { ImageSource = titleLogo };   // the ASD logo left of the title
         _root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -117,13 +117,22 @@ public sealed class SetupWindow : Window
         _ = PrepareAsync();
     }
 
-    /// <summary>"System default" or a language. The choice is saved in ASD's settings, so ASD opens in the same language.</summary>
+    /// <summary>A small row with a globe and the language box, at the bottom of the Welcome page.</summary>
+    private FrameworkElement LanguageRow()
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 4, 0, 0) };
+        row.Children.Add(new FontIcon { Glyph = "", FontSize = 14, Opacity = 0.7, VerticalAlignment = VerticalAlignment.Center });
+        row.Children.Add(MakeLanguagePicker());
+        return row;
+    }
+
+    /// <summary>"Auto" (the Windows language) or a language. The choice is saved in ASD's settings, so ASD opens in the same language.</summary>
     private ComboBox MakeLanguagePicker()
     {
-        var combo = new ComboBox { MinWidth = 150, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+        var combo = new ComboBox { MinWidth = 140, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
         AutomationProperties.SetAutomationId(combo, "LanguageBox");
         ToolTipService.SetToolTip(combo, "Language");
-        combo.Items.Add(new ComboBoxItem { Content = Loc.T("System default"), Tag = "auto" });
+        combo.Items.Add(new ComboBoxItem { Content = Loc.T("Auto"), Tag = "auto" });
         foreach (var l in Loc.Available) combo.Items.Add(new ComboBoxItem { Content = l.Name, Tag = l.Code });
         combo.SelectedIndex = 0;
         var saved = Loc.Setting;
@@ -498,6 +507,8 @@ public sealed class SetupWindow : Window
             _accept = null;   // already accepted when it was first installed
         }
 
+        panel.Children.Add(LanguageRow());
+
         _install = MakeButton(firstInstall ? "Install" : "Update", "InstallButton", accent: true);
         _install.IsEnabled = false;
         _install.Click += async (_, _) => await RunAsync(firstInstall ? Mode.Install : Mode.Update);
@@ -522,7 +533,7 @@ public sealed class SetupWindow : Window
         }
         buttons.Add(_install);
 
-        Show(Page(header, panel, buttons.ToArray()), firstInstall ? HeightFirstInstall : HeightSmall);
+        Show(Page(header, panel, buttons.ToArray()), (firstInstall ? HeightFirstInstall : HeightSmall) + 44);   // + the language row
     }
 
     private void UpdateInstallEnabled()
