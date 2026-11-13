@@ -15,9 +15,6 @@ public sealed record ToolInfo(
 
 public static class ToolRegistry
 {
-    /// <summary>The same tool, listed in the Toolbox instead of having its own navigation item.</summary>
-    private static ToolInfo InToolbox(ToolInfo tool) => tool with { Group = "more" };
-
     /// <summary>Tools that are part of ASD.</summary>
     private static readonly List<ToolInfo> Base = new List<ToolInfo>
     {
@@ -29,13 +26,9 @@ public static class ToolRegistry
         new("keys", "Keys Store", "Encrypted vault for API keys: Windows Hello, search, tags, expiry", "\uE72E", "main",
             "keys key store vault api secret token password credential windows hello passkey encrypt safe", () => new KeysStorePage()),
 
-        // ── Devices (own navigation item): pair a phone with ASD Connect ──
-        new("devices", "Devices", "Pair your phone with ASD Connect (QR code) and manage connected devices", "", "main",
-            "devices phone pair connect qr android asd connect websocket mobile", () => new DevicesPage()),
-
-        // ── Video Player (now in the Toolbox, under Images & Media) ──
-        InToolbox(new("video", "Video Player", "Play MP4, or MP4 + separate MP3, from a file or link", "\uE714", "main",
-            "video player play mp4 mp3 movie media stream audio quality", () => new VideoPlayerPage())),
+        // ── Video Player (own navigation item, not in the Toolbox) ──
+        new("video", "Video Player", "Play MP4, or MP4 + separate MP3, from a file or link", "\uE714", "main",
+            "video player play mp4 mp3 movie media stream audio quality", () => new VideoPlayerPage()),
 
         // ── Automation (own navigation item, not in the Toolbox) ──
         new("automation", "Automation", "Cards joined by arrows (on success, on failure, when ...) that run commands, web requests and notifications", "\uE768", "main",
@@ -113,7 +106,7 @@ public static class ToolRegistry
         ["json"] = "Text & Data", ["regex"] = "Text & Data", ["diff"] = "Text & Data", ["encode"] = "Text & Data",
         ["format"] = "Text & Data", ["text"] = "Text & Data", ["conv"] = "Text & Data", ["time"] = "Text & Data",
         ["crypto"] = "Security", ["hash"] = "Security", ["jwt"] = "Security",
-        ["ico"] = "Images & Media", ["imgconv"] = "Images & Media", ["video"] = "Images & Media",
+        ["ico"] = "Images & Media", ["imgconv"] = "Images & Media",
         ["cron"] = "Developer", ["gen"] = "Developer", ["track"] = "Developer",
     };
 

@@ -14,7 +14,7 @@ internal sealed record LaunchRequest(string? Tool, string? FilePath);
 internal static class LaunchRouter
 {
     private static readonly HashSet<string> Tools = new(StringComparer.OrdinalIgnoreCase)
-        { "home", "keys", "automation", "extensions", "upload", "video", "devices", "updates", "settings" };
+        { "home", "keys", "automation", "extensions", "upload", "video", "updates", "settings" };
 
     public static LaunchRequest Read(AppActivationArguments? args)
     {
