@@ -310,6 +310,51 @@ internal static class Installer
             .ToList();
     }
 
+    /// <param name="Local">in Components, not installed yet (or newer than the installed copy)</param>
+    /// <param name="Online">on the server, not installed yet (or newer than the installed copy)</param>
+    /// <param name="Reachable">false = the server could not be reached</param>
+    internal sealed record ExtensionCheck(List<BundledExtension> Local, List<BundledExtension> Online, bool Reachable);
+
+    /// <summary>
+    /// The check the Extensions step runs by itself: what is in Components and what the server has, each compared with what is installed.
+    /// The person then chooses one of the two sources. Offline: only Local is filled.
+    /// </summary>
+    internal static async Task<ExtensionCheck> CheckExtensionsAsync()
+    {
+        List<BundledExtension> local;
+        try { local = await Task.Run(FindBundledExtensions); }
+        catch { local = new List<BundledExtension>(); }
+
+        var online = new List<BundledExtension>();
+        bool reachable = false;
+        try
+        {
+            var remote = await TryReadRemoteListAsync();
+            if (remote != null)
+            {
+                reachable = true;
+                var byId = local.GroupBy(e => e.Id, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+                foreach (var r in remote)
+                {
+                    var note = byId.TryGetValue(r.Id, out var l) && IsNewerVersion(r.Version, l.Version) ? $"Newer than the one in Components ({l.Version})" : "";
+                    online.Add(new BundledExtension(r.Id, r.Name.Length > 0 ? r.Name : r.Id, r.Version, r.Description, "", true, note));
+                }
+            }
+        }
+        catch (Exception e) { Log("could not read the extensions on the server: " + e.Message); }
+
+        var root = InstalledExtensionsRoot();
+        bool Needed(BundledExtension e)
+        {
+            var have = ReadExtensionVersion(Path.Combine(root, e.Id, "extension.json"));
+            return have == null || !System.Version.TryParse(e.Version, out var offered) || offered > have;
+        }
+        return new ExtensionCheck(
+            local.Where(Needed).OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+            online.Where(Needed).OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+            reachable);
+    }
+
     /// <summary>Downloads extensions.zip from the server, checks it against the hash of the list and unpacks it. Returns the folder with one folder per extension.</summary>
     private static async Task<string> DownloadRemoteExtensionsAsync(IProgress<(double Fraction, string Text)> progress, CancellationToken ct)
     {

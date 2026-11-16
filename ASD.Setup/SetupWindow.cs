@@ -29,7 +29,7 @@ public sealed class SetupWindow : Window
     private const int HeightSmall = 340;
     private const int HeightConfirm = 380;
     private const int HeightError = 440;
-    private const int HeightExtensions = 560;
+    private const int HeightExtensions = 620;
 
     private enum Mode { Install, Update, Repair, Uninstall }
 
@@ -407,11 +407,11 @@ public sealed class SetupWindow : Window
         }
 
         _ready = false;
-        var extensionsTask = Installer.FindExtensionsAsync();   // Components compared with the server, at the same time
+        // (the Extensions step checks Components and the server by itself when it is shown)
         var installed = await Task.Run(Installer.FindInstalled);
         _local = Installer.LocalPackage();
-        _bundled = await extensionsTask;
-        _extSteps = _bundled.Count > 0;
+        _bundled = new List<Installer.BundledExtension>();
+        _extSteps = true;
         ShowWelcome(installed);
 
         string line;
@@ -757,8 +757,57 @@ public sealed class SetupWindow : Window
 
     // ───────── 2b. extensions: choose what to install from the Components folder, or skip ─────────
 
-    private void ShowExtensions()
+    /// <summary>The Extensions step starts with a check by itself (Components and the server, compared with what is installed), then the person chooses.</summary>
+    private void ShowExtensions() => _ = CheckExtensionsAsync();
+
+    private async Task CheckExtensionsAsync()
     {
+        var wait = Stack(10);
+        wait.Children.Add(Text("Looking at the extensions in Components and on the server…", 13, dim: true));
+        wait.Children.Add(new ProgressBar { IsIndeterminate = true });
+        Show(Page(Header("Extensions", "Checking for extensions updates…", Nav(2, Verb(_mode))), wait), HeightSmall);
+        Installer.Log("checking for extensions updates");
+
+        Installer.ExtensionCheck check;
+        try
+        {
+            var minimum = Task.Delay(800);   // long enough to be read
+            check = await Installer.CheckExtensionsAsync();
+            await minimum;
+        }
+        catch (Exception e)
+        {
+            Installer.Log("the extensions check failed: " + e.Message);
+            check = new Installer.ExtensionCheck(new List<Installer.BundledExtension>(), new List<Installer.BundledExtension>(), false);
+        }
+        if (_cancel.IsCancellationRequested) return;
+        Installer.Log($"extensions: {check.Local.Count} local, {check.Online.Count} online{(check.Reachable ? "" : " (the server could not be reached)")}");
+
+        if (check.Local.Count == 0 && check.Online.Count == 0) { ShowNoExtensions(check); return; }
+        // Online first when the server has a newer version of something in Components (or Components has nothing); the test mode (--auto) stays with the local files
+        bool newer = check.Online.Any(i => i.Note.Length > 0);
+        ShowExtensionChoice(check, check.Local.Count == 0 || (newer && !_auto));
+    }
+
+    private void ShowNoExtensions(Installer.ExtensionCheck check)
+    {
+        var panel = Stack(10);
+        panel.Children.Add(Text(check.Reachable ? "Your extensions are up to date. Nothing to install." : "No extensions were found on this PC, and the server could not be reached.", 14));
+        var next = MakeButton("Continue", "ContinueButton", accent: true);
+        next.Click += (_, _) => ShowDone(false);
+        Show(Page(Header("Extensions", "Add extra tools to ASD", Nav(2, Verb(_mode))), panel, next), HeightSmall);
+        if (_auto) _ = AutoContinueAsync();
+    }
+
+    private async Task AutoContinueAsync()
+    {
+        await Task.Delay(2500);
+        ShowDone(false);
+    }
+
+    private void ShowExtensionChoice(Installer.ExtensionCheck check, bool online)
+    {
+        _bundled = online ? check.Online : check.Local;   // what the list below shows
         var header = Header("Extensions", "Add extra tools to ASD", Nav(2, Verb(_mode)));
 
         var list = Stack(8);
@@ -784,8 +833,30 @@ public sealed class SetupWindow : Window
 
         var panel = Stack(10);
         panel.Children.Add(Text("Choose the extensions to install now. You can add them later from Extensions inside ASD.", 13, dim: true));
+        if (!check.Reachable) panel.Children.Add(Text("No internet connection: only the extensions on this PC are offered.", 12, dim: true));
+        if (check.Local.Count > 0 && check.Online.Count > 0)
+        {
+            // two sources: the person picks one (the page is built again with the other list)
+            RadioButton Source(string title, string detail, bool selected, string id)
+            {
+                var content = new StackPanel { Spacing = 1 };
+                content.Children.Add(Text(title, 14, bold: true));
+                content.Children.Add(Text(detail, 12, dim: true));
+                var radio = new RadioButton { Content = content, GroupName = "ExtensionSource", IsChecked = selected, MinWidth = 0 };
+                AutomationProperties.SetAutomationId(radio, id);
+                return radio;
+            }
+            var fromLocal = Source("Local (the Components folder)", $"{check.Local.Count} extension(s) next to this installer", !online, "SourceLocal");
+            var fromOnline = Source("Online (the server)", $"{check.Online.Count} extension(s), the newest versions", online, "SourceOnline");
+            fromLocal.Checked += (_, _) => { if (online) DispatcherQueue.TryEnqueue(() => ShowExtensionChoice(check, false)); };
+            fromOnline.Checked += (_, _) => { if (!online) DispatcherQueue.TryEnqueue(() => ShowExtensionChoice(check, true)); };
+            var sources = Stack(2);
+            sources.Children.Add(fromLocal);
+            sources.Children.Add(fromOnline);
+            panel.Children.Add(sources);
+        }
         panel.Children.Add(links);
-        panel.Children.Add(new ScrollViewer { Content = list, Height = 200, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(0, 0, 12, 0) });
+        panel.Children.Add(new ScrollViewer { Content = list, Height = 170, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(0, 0, 12, 0) });
 
         var skip = MakeButton("Skip", "SkipButton");
         var install = MakeButton("Install", "InstallExtensionsButton", accent: true);
